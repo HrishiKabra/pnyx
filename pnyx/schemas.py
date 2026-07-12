@@ -372,6 +372,42 @@ class RunConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Provider / model configuration + cost accounting (P3)
+# --------------------------------------------------------------------------
+
+
+class ModelSpec(BaseModel):
+    """Provider-agnostic description of one model endpoint.
+
+    Every model in the run config is a flat record
+    ``{base_url, api_key_env, model_id, price_in, price_out, rpm_limit,
+    supports_json_schema}`` (Global Constraints). Prices are in US dollars
+    per **million** tokens. ``api_key_env`` names the environment variable
+    holding the bearer key — the key value itself is NEVER stored on the
+    spec, read from config, or logged.
+    """
+
+    base_url: str
+    api_key_env: str
+    model_id: str
+    price_in: float = Field(ge=0.0, description="$/M input (prompt) tokens")
+    price_out: float = Field(ge=0.0, description="$/M output (completion) tokens")
+    rpm_limit: int = Field(gt=0, description="client-side requests-per-minute bucket")
+    supports_json_schema: bool = True
+
+    def cost(self, in_tokens: int, out_tokens: int) -> float:
+        """Dollar cost of a call with the given token counts (prices are $/M)."""
+        return (in_tokens * self.price_in + out_tokens * self.price_out) / 1_000_000.0
+
+
+class Usage(BaseModel):
+    """Token usage parsed from a provider response's ``usage`` block."""
+
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
+
+
+# --------------------------------------------------------------------------
 # Turn identity
 # --------------------------------------------------------------------------
 
@@ -403,6 +439,21 @@ class TurnKey(BaseModel):
             self.round,
             self.agent_id,
         )
+
+
+class CostEntry(BaseModel):
+    """One line of the append-only cost ledger ``data/<run>/costs.jsonl``:
+    per-call token usage, its dollar cost, and the turn that incurred it.
+
+    ``key`` is optional so a call not tied to a single turn (or a unit test)
+    can still be recorded; production runner calls always carry the turn key.
+    """
+
+    model_id: str
+    in_tokens: int = Field(ge=0)
+    out_tokens: int = Field(ge=0)
+    cost: float = Field(ge=0.0)
+    key: TurnKey | None = None
 
 
 # --------------------------------------------------------------------------
