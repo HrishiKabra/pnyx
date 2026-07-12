@@ -14,6 +14,9 @@ __pycache__/
 .venv/
 venv/
 
+# Session scratch (SDD ledger, task briefs)
+.superpowers/
+
 # OS / editor
 .DS_Store
 .idea/
