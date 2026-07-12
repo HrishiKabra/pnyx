@@ -108,6 +108,22 @@ class TradeView(BeliefView):
     max_affordable_no: float = Field(ge=0.0)
 
 
+class AgentSpec(BaseModel):
+    """Minimal P1 agent configuration: identity, shard assignment, starting
+    bankroll, and kind.
+
+    ``kind`` is a closed Literal with a single P1 value; real LLM agent
+    kinds (with model/persona/provider fields) arrive in P3, so adding one
+    later is a deliberate, visible schema change rather than a silent
+    string.
+    """
+
+    agent_id: str
+    shard_indices: list[int]
+    bankroll: float = Field(default=100.0, ge=0.0)
+    kind: Literal["mock"] = "mock"
+
+
 # --------------------------------------------------------------------------
 # Generative environment records
 # --------------------------------------------------------------------------

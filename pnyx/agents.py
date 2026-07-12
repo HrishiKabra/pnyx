@@ -17,27 +17,10 @@ asks for (Global Constraints — "never trust the agent's number").
 from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
-from pydantic import BaseModel, Field
 
-from pnyx.schemas import Belief, BeliefView, Trade, TradeView
+from pnyx.schemas import AgentSpec, Belief, BeliefView, Trade, TradeView
 
 __all__ = ["AgentSpec", "Agent", "MockAgent"]
-
-
-class AgentSpec(BaseModel):
-    """Minimal P1 agent configuration: identity, shard assignment, starting
-    bankroll, and kind.
-
-    ``kind`` is a closed Literal with a single P1 value; real LLM agent
-    kinds (with model/persona/provider fields) arrive in P3, so adding one
-    later is a deliberate, visible schema change rather than a silent
-    string.
-    """
-
-    agent_id: str
-    shard_indices: list[int]
-    bankroll: float = Field(default=100.0, ge=0.0)
-    kind: Literal["mock"] = "mock"
 
 
 @runtime_checkable

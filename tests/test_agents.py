@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from pnyx.agents import Agent, AgentSpec, MockAgent
-from pnyx.schemas import Belief, BeliefView, Trade, TradeView
+from pnyx.agents import Agent, MockAgent
+from pnyx.schemas import AgentSpec, Belief, BeliefView, Trade, TradeView
 
 SIGMA = MockAgent.BELIEF_SIGMA
 BAND = MockAgent.TRADE_BAND
