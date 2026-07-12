@@ -311,11 +311,14 @@ class SettlementEvent(_EventBase):
     """Logged once per (condition, seed, question_id) at market close.
 
     ``subsidy`` is the market maker's realized loss for this question:
-    the LMSR cost-function delta from the market's opening state to its
-    closing state, ``C(q_final) - C(q_0)``, minus the total trade cost
-    collected from agents over the market pass (i.e. maker loss net of
-    revenue). This is the maker's out-of-pocket subsidy for running the
-    market; see market.py for the b=40 => worst-case b*ln(2) bound.
+    the worst-case settlement payout across outcomes minus the total
+    trade cost collected from agents over the market pass, i.e.
+    ``max(delta_q_yes, delta_q_no, 0) - (C(q_final) - C(q_0))``. (Note:
+    collected revenue telescopes to exactly ``C(q_final) - C(q_0)``, so
+    "payout delta minus revenue" is the only non-degenerate definition.)
+    This is the maker's out-of-pocket subsidy for running the market;
+    see market.py's ``Market.subsidy`` for the derivation and the
+    b=40 => worst-case b*ln(2) bound.
     """
 
     type: Literal["settlement"] = "settlement"
