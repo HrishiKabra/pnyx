@@ -6,7 +6,7 @@
 |-------|--------|-------|
 | P0 — Spec freeze | ✅ done (2026-07-13) | git init; SPEC.md (public §2 + §5 verbatim); .gitignore covers CLAUDE.md, .env, data/ |
 | P1 — Engine + env | ✅ done (2026-07-13) | market.py, env.py, schemas.py, MockAgent, oracle, runner.py + cli.py + configs/mock.yaml; 5-question mock end-to-end (0 API calls) + SIGKILL kill-resume acceptance test green; 114 tests pass under `-W error` |
-| P2 — Environment rendering | not started | generator + renderer + verifier; 40+10 questions |
+| P2 — Environment rendering | ✅ done (2026-07-13) | 40+10 questions rendered by 10 Sonnet 5 subagents, adversarially verified to 100% pass (2 fix rounds); datasets/questions_v1.jsonl + pilot frozen |
 | P3 — Pilot (~$1–2) | not started | 10 held-out questions, pool A, b-sweep, prompt freeze, matching table |
 | P4 — Main runs | not started | full grid × 3 seeds |
 | P5 — Analysis | not started | Fig 1, Fig 2, Tables 1–2, stats |
@@ -52,3 +52,26 @@
 - **Async seam:** turn execution is `async def` driven by `asyncio.run`; P1 is
   not concurrent (MockAgent is sync) but a P3 awaited provider slots in without
   restructuring. No providers / rate limiting / cost ledger / baselines built.
+
+## P2 dataset
+
+- questions verified: 50
+- shards checked: 300
+- direction pass rate: 1.0000
+- leak pass rate: 1.0000
+- meta pass rate: 1.0000
+- question pass rate: 1.0000
+- all pass: True
+- assembled: questions_v1.jsonl (40) + questions_pilot_v1.jsonl (10)
+- render/verify provenance: 10 parallel renderer subagents (Sonnet 5), 10 independent
+  verifier subagents (Sonnet 5, adversarial). Round-1 question pass rate 80% (10/50
+  failed: neutral shards, standalone-direction failures, duplicate-fact leaks,
+  register asymmetries, one physical incoherence); two surgical re-render rounds with
+  fresh verifiers brought all 50 to pass. Shard-level round-1 pass rates: direction
+  97.3%, leak 99.0%, meta 99.0%.
+- manual spot-check (controller): 10 shards across q002/q010/q027/q033/q044 read and
+  judged individually — directions entailed standalone, no cross-shard leaks, uniform
+  register. Passed.
+- single-shard non-sufficiency: enforced numerically at generation (min single-shard
+  margin ≥ 0.1 vs posterior|all, checked against the oracle; margins stored in each
+  record's meta and re-verified in tests).
