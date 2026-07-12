@@ -5,7 +5,7 @@
 | Phase | Status | Notes |
 |-------|--------|-------|
 | P0 — Spec freeze | ✅ done (2026-07-13) | git init; SPEC.md (public §2 + §5 verbatim); .gitignore covers CLAUDE.md, .env, data/ |
-| P1 — Engine + env | not started | market.py, env.py, schemas.py, MockAgent, oracle + kill-resume tests |
+| P1 — Engine + env | ✅ done (2026-07-13) | market.py, env.py, schemas.py, MockAgent, oracle, runner.py + cli.py + configs/mock.yaml; 5-question mock end-to-end (0 API calls) + SIGKILL kill-resume acceptance test green; 114 tests pass under `-W error` |
 | P2 — Environment rendering | not started | generator + renderer + verifier; 40+10 questions |
 | P3 — Pilot (~$1–2) | not started | 10 held-out questions, pool A, b-sweep, prompt freeze, matching table |
 | P4 — Main runs | not started | full grid × 3 seeds |
@@ -23,4 +23,29 @@
 
 ## Dependency additions beyond stdlib/pydantic/httpx/openai/numpy/pandas/matplotlib/vllm
 
-(none yet — justify here if added)
+- **pyyaml** (P1): run configs are YAML (`pnyx/configs/mock.yaml`); the CLI loads
+  and validates them into `RunConfig`. Standard, pure-config dependency; no
+  code execution risk (`yaml.safe_load` only). Approved in Global Constraints
+  P1 dependency list.
+
+## P1 deviations / design decisions (Task 5)
+
+- **CLI entry:** `python -m pnyx.cli {run,status} --config <yaml> [--data-dir <dir>]`.
+  Module invocation via a `main()` guard — no `__main__.py`, no
+  `[project.scripts]` console script (keeps the package import-only, no install
+  step for tests). `--data-dir` overrides the config's `data_dir`.
+- **Log layout under `data/`:** one event log `{condition}_seed{seed}.jsonl` and
+  one persisted-questions sidecar `{condition}_seed{seed}.questions.jsonl` per
+  (condition, seed). Questions are generated once and reloaded on resume so
+  rejection-sampling nondeterminism can never fork a resumed run.
+- **Seeding scheme:** all RNG derives from the integer seed via
+  `SeedSequence([seed, sha256(stable_tuple)])`, keyed per purpose
+  (questions / belief / shuffle / trade). SHA-256 (not builtin salted `hash`)
+  keeps it stable across processes — required for the kill-resume guarantee.
+- **`RunConfig` added to `schemas.py`** (single-source-of-truth constraint).
+- **Test-only fault injection:** `PNYX_TURN_DELAY` env var adds a per-live-turn
+  sleep so the kill-resume test reliably catches a run mid-flight; zero effect
+  when unset.
+- **Async seam:** turn execution is `async def` driven by `asyncio.run`; P1 is
+  not concurrent (MockAgent is sync) but a P3 awaited provider slots in without
+  restructuring. No providers / rate limiting / cost ledger / baselines built.

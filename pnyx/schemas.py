@@ -248,6 +248,46 @@ class EnvConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Run configuration (loaded from configs/*.yaml by the runner)
+# --------------------------------------------------------------------------
+
+
+class RunConfig(BaseModel):
+    """Top-level experiment configuration for one condition.
+
+    Loaded from a YAML file (see ``pnyx/configs/mock.yaml``). Lives here in
+    ``schemas.py`` because Global Constraints make this file the single source
+    of truth for every Pydantic model. One event log is written per
+    ``(condition, seed)`` under ``data_dir``; the generated ``QuestionRecord``
+    set is persisted alongside it so a resumed run never re-samples questions.
+    """
+
+    condition: str
+    seeds: list[int] = Field(min_length=1)
+    n_questions: int = Field(ge=1)
+    b: float = Field(default=40.0, gt=0.0)
+    n_rounds: int = Field(default=3, ge=1)
+    wealth_persistent: bool = False
+    data_dir: str
+    env: EnvConfig
+    agents: list[AgentSpec] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_shards(self) -> "RunConfig":
+        for spec in self.agents:
+            for idx in spec.shard_indices:
+                if not (0 <= idx < self.env.n_signals):
+                    raise ValueError(
+                        f"agent {spec.agent_id!r} shard index {idx} out of range "
+                        f"[0, {self.env.n_signals})"
+                    )
+        ids = [a.agent_id for a in self.agents]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"agent_id values must be unique, got {ids}")
+        return self
+
+
+# --------------------------------------------------------------------------
 # Turn identity
 # --------------------------------------------------------------------------
 

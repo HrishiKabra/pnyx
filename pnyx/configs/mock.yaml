@@ -1,0 +1,32 @@
+# Pnyx P1 mock configuration — zero API calls, all-synthetic.
+#
+# One MOCK condition, one seed, 5 questions generated deterministically from
+# the seed by the env generator (easy difficulty, n=6 conditionally-independent
+# signals, lam=0). Six mock agents each hold one distinct single-signal shard.
+# LMSR liquidity b=40, bankroll=100/agent, 3 market rounds, wealth resets per
+# question (see global constraints for the b/bankroll rationale).
+
+condition: MOCK
+seeds: [0]
+n_questions: 5
+b: 40.0
+n_rounds: 3
+wealth_persistent: false
+data_dir: data/mock
+
+env:
+  n_signals: 6
+  accuracies: [0.7, 0.7, 0.7, 0.7, 0.7, 0.7]
+  lams: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  a_z: 0.8
+  difficulty: easy
+  min_single_shard_margin: 0.1
+  max_rejection_tries: 1000
+
+agents:
+  - {agent_id: agent0, shard_indices: [0], bankroll: 100.0}
+  - {agent_id: agent1, shard_indices: [1], bankroll: 100.0}
+  - {agent_id: agent2, shard_indices: [2], bankroll: 100.0}
+  - {agent_id: agent3, shard_indices: [3], bankroll: 100.0}
+  - {agent_id: agent4, shard_indices: [4], bankroll: 100.0}
+  - {agent_id: agent5, shard_indices: [5], bankroll: 100.0}
