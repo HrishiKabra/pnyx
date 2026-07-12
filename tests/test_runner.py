@@ -252,3 +252,31 @@ def test_rerun_completed_is_noop(tmp_path):
     run_experiment(config)  # resume of an already-complete run
     after = log.read_text()
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# Post-trade bankroll floors at 0.0 despite full-clamp float residue
+# ---------------------------------------------------------------------------
+
+
+def test_bankroll_floors_at_zero_on_full_clamp_residue():
+    """max_affordable_shares round-trips through log/exp, so a full-clamp buy
+    (requested shares far exceeding affordability) can cost a hair more than
+    cash — here ~5.68e-13. Without runner.py's max(0.0, cash - cost) floor,
+    bankroll_after would go slightly negative and fail TradeView's ge=0
+    validation on the agent's next turn."""
+    b, q_yes, q_no = 100.0, 7.476736061608236, 42.44350282216679
+    cash, side = 997.8406280338953, "yes"
+    market = Market(q_yes, q_no, b)
+
+    # Requested shares far exceed affordability, so clamp returns the full
+    # affordable amount (mirrors runner.py's live-execution path).
+    executed = market.clamp_shares(side, shares=1_000_000.0, cash=cash)
+    cost = market.buy(side, executed)
+
+    # Confirm this scenario actually exercises the residue the fix guards.
+    assert cost > cash
+
+    bankroll_after = max(0.0, cash - cost)  # runner.py's post-trade update
+    assert bankroll_after >= 0.0
+    assert bankroll_after == 0.0

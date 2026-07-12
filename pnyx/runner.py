@@ -359,7 +359,8 @@ async def _run_question(
                 if executed > 0.0:
                     cost = market.buy(side, executed)
                     holdings[agent_id][side] += executed
-            bankrolls[agent_id] = cash - cost
+            # Floor at 0: clamp_shares guarantees cost <= cash + 1e-9, so a full-clamp buy can leave a ~-1e-13 residue that would fail TradeView's ge=0 next round.
+            bankrolls[agent_id] = max(0.0, cash - cost)
 
             _append_event(f, TradeEvent(
                 key=key, trade=trade, executed_shares=executed, cost=cost,
