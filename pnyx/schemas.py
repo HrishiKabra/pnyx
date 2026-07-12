@@ -165,6 +165,8 @@ class QuestionRecord(BaseModel):
     signals: list[SignalRecord]
     posterior_table: dict[str, float]
     shards: list[str] | None = None  # prose rendering arrives in P2
+    # Full question prose (rendered in P2); None keeps the P1 mock path valid.
+    question_text: str | None = None
     # Generator provenance: config name, seed, difficulty tag, etc.
     meta: dict[str, Any] = Field(default_factory=dict)
 
@@ -185,6 +187,84 @@ class QuestionRecord(BaseModel):
                         "ascending, deduplicated indices"
                     )
         return table
+
+
+# --------------------------------------------------------------------------
+# P2 dataset staging-file schemas (build / render / verify pipeline)
+# --------------------------------------------------------------------------
+#
+# The renderer and verifier are Claude subagents orchestrated OUTSIDE this
+# codebase; they drop JSON files into datasets/staging/. These models are the
+# validation contract the dataset tooling (pnyx.dataset) applies on merge/verify
+# so a malformed staging file fails loudly rather than corrupting the frozen
+# dataset. No LLM calls happen here — only parse + validate.
+
+
+class RenderSpecSignal(BaseModel):
+    """One signal's public-facing rendering hint: which way the shard should
+    lean. Direction is derived from the realized signal value (1 -> YES,
+    0 -> NO); accuracies / latent state / posteriors are NEVER exposed."""
+
+    index: int = Field(ge=0)
+    direction: Literal["YES", "NO"]
+
+
+class RenderSpec(BaseModel):
+    """One line of render_specs.jsonl — everything the renderer subagent is
+    allowed to see for a question."""
+
+    question_id: str
+    difficulty: Literal["easy", "hard"]
+    domain_hint: str
+    signals: list[RenderSpecSignal]
+
+
+class RenderedQuestion(BaseModel):
+    """A renderer subagent's output for one question: the prose question plus
+    one prose shard per signal. Validators enforce the merge contract (6
+    non-empty shards, a non-empty question ending in '?')."""
+
+    question_id: str
+    question_text: str
+    shards: list[str]
+
+    @field_validator("question_text")
+    @classmethod
+    def _validate_question_text(cls, text: str) -> str:
+        if not text.strip():
+            raise ValueError("question_text must be non-empty")
+        if not text.rstrip().endswith("?"):
+            raise ValueError("question_text must end with '?'")
+        return text
+
+    @field_validator("shards")
+    @classmethod
+    def _validate_shards(cls, shards: list[str]) -> list[str]:
+        if len(shards) != 6:
+            raise ValueError(f"expected 6 shards, got {len(shards)}")
+        for i, shard in enumerate(shards):
+            if not shard.strip():
+                raise ValueError(f"shard {i} must be non-empty")
+        return shards
+
+
+class ShardVerdict(BaseModel):
+    """A verifier subagent's per-shard checks for one signal's rendering."""
+
+    index: int = Field(ge=0)
+    direction_ok: bool
+    leak_ok: bool
+    meta_ok: bool
+    note: str = ""
+
+
+class QuestionVerdict(BaseModel):
+    """A verifier subagent's output for one question: per-shard checks plus a
+    top-level pass flag."""
+
+    question_id: str
+    shard_verdicts: list[ShardVerdict]
+    question_ok: bool
 
 
 # --------------------------------------------------------------------------
@@ -269,6 +349,10 @@ class RunConfig(BaseModel):
     n_rounds: int = Field(default=3, ge=1)
     wealth_persistent: bool = False
     data_dir: str
+    # When set, the runner loads QuestionRecords from this JSONL dataset instead
+    # of generating them (requiring shards + question_text on each). The generate
+    # path stays for the MOCK config. See ``runner._load_or_generate_questions``.
+    questions_file: str | None = None
     env: EnvConfig
     agents: list[AgentSpec] = Field(min_length=1)
 

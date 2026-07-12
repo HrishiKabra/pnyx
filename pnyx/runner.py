@@ -208,6 +208,45 @@ def _canonical(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _load_questions_file(config: RunConfig) -> list[QuestionRecord]:
+    """Load the first ``n_questions`` records from ``config.questions_file``,
+    requiring each to carry shards + question_text (market runs on rendered
+    questions only). Fails loudly on a short file or a missing render.
+
+    The loaded records become the per-run sidecar (persisted by the caller)
+    exactly as the generate path does, so resume/kill-safety is unchanged.
+    """
+    path = Path(config.questions_file)
+    if not path.exists():
+        raise FileNotFoundError(f"questions_file {path} does not exist")
+    records = [
+        QuestionRecord.model_validate_json(line)
+        for line in path.read_text().splitlines() if line
+    ]
+    if len(records) < config.n_questions:
+        raise ValueError(
+            f"questions_file {path} has {len(records)} records, need at least "
+            f"n_questions={config.n_questions}"
+        )
+    records = records[: config.n_questions]  # subset: take the first N
+    for rec in records:
+        if rec.shards is None or not rec.shards:
+            raise ValueError(
+                f"{rec.question_id}: questions_file record missing shards "
+                "(market runs on rendered questions only)"
+            )
+        if len(rec.shards) != len(rec.signals):
+            raise ValueError(
+                f"{rec.question_id}: shard count {len(rec.shards)} != signal "
+                f"count {len(rec.signals)}"
+            )
+        if not rec.question_text:
+            raise ValueError(
+                f"{rec.question_id}: questions_file record missing question_text"
+            )
+    return records
+
+
 def _load_or_generate_questions(config: RunConfig, seed: int) -> list[QuestionRecord]:
     qpath = questions_path_for(config, seed)
     if qpath.exists():
@@ -215,11 +254,16 @@ def _load_or_generate_questions(config: RunConfig, seed: int) -> list[QuestionRe
         return [QuestionRecord.model_validate_json(line)
                 for line in text.splitlines() if line]
 
-    rng = _rng(seed, "questions", config.condition)
-    questions = [
-        generate_question(config.env, rng, f"{config.condition}_seed{seed}_q{i}")
-        for i in range(config.n_questions)
-    ]
+    if config.questions_file is not None:
+        # File-backed dataset: load + validate, then persist to the sidecar
+        # below exactly as the generate path does (resume semantics unchanged).
+        questions = _load_questions_file(config)
+    else:
+        rng = _rng(seed, "questions", config.condition)
+        questions = [
+            generate_question(config.env, rng, f"{config.condition}_seed{seed}_q{i}")
+            for i in range(config.n_questions)
+        ]
     # Atomic write: full file or nothing, so a mid-write kill can't persist a
     # partial (and therefore forked) question set.
     qpath.parent.mkdir(parents=True, exist_ok=True)

@@ -7,6 +7,10 @@ CLAUDE.md
 # Experiment data (JSONL event logs)
 data/
 
+# P2 dataset scratch (build/render/verify staging); the committed dataset lives
+# at datasets/questions_v1.jsonl + datasets/questions_pilot_v1.jsonl
+datasets/staging/
+
 # Python
 __pycache__/
 *.pyc

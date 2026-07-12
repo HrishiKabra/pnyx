@@ -22,7 +22,9 @@ from pnyx.runner import (
     run_experiment,
     ts_stripped_lines,
 )
-from pnyx.schemas import SettlementEvent, TradeEvent
+from pnyx.schemas import QuestionRecord, RunConfig, SettlementEvent, TradeEvent
+
+from tests._fixtures import make_rendered_question, write_questions_file
 
 MOCK_CONFIG = Path(__file__).resolve().parents[1] / "pnyx" / "configs" / "mock.yaml"
 
@@ -66,11 +68,13 @@ def test_end_to_end_five_questions(tmp_path):
 
 def test_no_network_imports():
     # ZERO API calls by construction: no HTTP / provider client is importable
-    # on the P1 runner path.
+    # on the P1 runner path or the P2 dataset tooling.
     import pnyx.agents
+    import pnyx.cli
+    import pnyx.dataset
     import pnyx.runner
 
-    for mod in (pnyx.runner, pnyx.agents):
+    for mod in (pnyx.runner, pnyx.agents, pnyx.dataset, pnyx.cli):
         src = Path(mod.__file__).read_text()
         for banned in ("import httpx", "import openai", "import requests",
                        "urllib.request", "aiohttp"):
@@ -280,3 +284,87 @@ def test_bankroll_floors_at_zero_on_full_clamp_residue():
     bankroll_after = max(0.0, cash - cost)  # runner.py's post-trade update
     assert bankroll_after >= 0.0
     assert bankroll_after == 0.0
+
+
+# ---------------------------------------------------------------------------
+# questions_file loading path (P2)
+# ---------------------------------------------------------------------------
+
+
+def _file_config(tmp_path: Path, qfile: Path, *, n_questions: int) -> RunConfig:
+    base = load_config(str(MOCK_CONFIG))
+    return base.model_copy(update={
+        "condition": "FILE",
+        "n_questions": n_questions,
+        "data_dir": str(tmp_path / "data"),
+        "questions_file": str(qfile),
+    })
+
+
+def test_questions_file_is_loaded_and_persisted_to_sidecar(tmp_path):
+    qfile = write_questions_file(tmp_path / "ds.jsonl", 3)
+    config = _file_config(tmp_path, qfile, n_questions=3)
+    run_experiment(config)
+
+    seed = config.seeds[0]
+    # Sidecar persisted from the dataset file, byte-for-byte record set.
+    sidecar = questions_path_for(config, seed)
+    assert sidecar.exists()
+    loaded = [QuestionRecord.model_validate_json(line)
+              for line in sidecar.read_text().splitlines() if line]
+    assert [r.question_id for r in loaded] == ["q000", "q001", "q002"]
+    # Records carry the rendered content the market runs on.
+    for r in loaded:
+        assert r.shards is not None and len(r.shards) == 6
+        assert r.question_text
+
+    # Event log settles exactly the file's questions (not generated ids).
+    events = read_events(log_path_for(config, seed))
+    settled = {e.question_id for e in events if e.type == "settlement"}
+    assert settled == {"q000", "q001", "q002"}
+
+
+def test_questions_file_subset_takes_first_n(tmp_path):
+    qfile = write_questions_file(tmp_path / "ds.jsonl", 5)
+    config = _file_config(tmp_path, qfile, n_questions=2)
+    run_experiment(config)
+    events = read_events(log_path_for(config, config.seeds[0]))
+    settled = {e.question_id for e in events if e.type == "settlement"}
+    assert settled == {"q000", "q001"}
+
+
+def test_questions_file_too_short_fails_loudly(tmp_path):
+    qfile = write_questions_file(tmp_path / "ds.jsonl", 2)
+    config = _file_config(tmp_path, qfile, n_questions=3)
+    with pytest.raises(ValueError, match="at least"):
+        run_experiment(config)
+
+
+def test_questions_file_missing_shards_fails_loudly(tmp_path):
+    # A record with no shards must be rejected: the market needs rendered prose.
+    rec = make_rendered_question("q000", seed=1).model_copy(update={"shards": None})
+    qfile = tmp_path / "ds.jsonl"
+    qfile.write_text(rec.model_dump_json() + "\n")
+    config = _file_config(tmp_path, qfile, n_questions=1)
+    with pytest.raises(ValueError, match="shards"):
+        run_experiment(config)
+
+
+def test_questions_file_missing_question_text_fails_loudly(tmp_path):
+    rec = make_rendered_question("q000", seed=1).model_copy(update={"question_text": None})
+    qfile = tmp_path / "ds.jsonl"
+    qfile.write_text(rec.model_dump_json() + "\n")
+    config = _file_config(tmp_path, qfile, n_questions=1)
+    with pytest.raises(ValueError, match="question_text"):
+        run_experiment(config)
+
+
+def test_questions_file_deterministic_logs(tmp_path):
+    qfile = write_questions_file(tmp_path / "ds.jsonl", 3)
+    c1 = _file_config(tmp_path / "a", qfile, n_questions=3)
+    c2 = _file_config(tmp_path / "b", qfile, n_questions=3)
+    run_experiment(c1)
+    run_experiment(c2)
+    l1 = ts_stripped_lines(log_path_for(c1, c1.seeds[0]))
+    l2 = ts_stripped_lines(log_path_for(c2, c2.seeds[0]))
+    assert l1 == l2 and len(l1) > 0
