@@ -12,7 +12,9 @@ Design guarantees
 -----------------
 * **No key leakage.** The bearer key is read from the environment per call and
   placed only in the ``Authorization`` header. It is never stored on any object,
-  never included in an exception message, never printed. Tests assert this.
+  never included in an exception message, never printed. Tests assert this. A
+  missing key env var raises :class:`ProviderError` naming the env var, never
+  the (absent) key material.
 * **Deterministic under test.** The token bucket takes an injectable monotonic
   ``clock`` + async ``sleep``; retry backoff takes an injectable ``jitter``.
   Nothing here calls ``time`` / ``random`` / ``asyncio.sleep`` directly when the
@@ -21,12 +23,24 @@ Design guarantees
 * **Rate limiting.** One :class:`TokenBucket` per ``model_id`` (the provider
   bucket key), refilling at ``rpm_limit`` tokens/minute. asyncio-safe via an
   internal lock; monotonic-clock based so wall-clock jumps can't unthrottle it.
+  A token is re-acquired on every attempt — including retries — so a retry
+  storm can never fire off-bucket and blow through a free-tier rpm cap.
 * **Retry / park.** ``429`` and ``5xx`` responses (and transport errors) are
   retried up to ``max_retries`` times, honouring ``Retry-After`` when present
   plus full jitter to avoid a thundering herd. After the budget of retries is
   exhausted the call raises :class:`TurnParked` — the runner treats a parked
   turn as skipped-this-run (left incomplete in the event log, retried on
   resume) rather than crashing the whole run.
+* **Parse failures still bill their usage.** A 200 whose body fails schema
+  validation (including a null ``content`` under a schema) raises
+  :class:`SchemaParseError` carrying the already-computed ``.usage``, the raw
+  ``.content``, and ``.error`` — never the API key or the full request —
+  instead of letting the ``ValidationError`` escape unbilled. A structurally
+  malformed 200 (missing/null content with no schema) raises
+  :class:`ProviderError` instead, with ``.usage`` set when computable and
+  ``None`` (bill nothing) when it isn't. The caller (Task 2 runner) bills
+  ``.usage`` against the cost ledger and implements the one-retry
+  contract — this module never retries a parse failure itself.
 
 The cost ledger (:class:`CostLedger`) is an append-only JSONL file mirroring
 the event log's atomic append+fsync durability, reconstructed from disk on
@@ -42,6 +56,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+from pydantic import ValidationError
 
 from pnyx.schemas import CostEntry, ModelSpec, TurnKey, Usage
 
@@ -51,6 +66,7 @@ __all__ = [
     "CostLedger",
     "TurnParked",
     "ProviderError",
+    "SchemaParseError",
     "check_openrouter_credits",
     "warn_low_credits",
 ]
@@ -62,10 +78,41 @@ _DEFAULT_BASE_BACKOFF = 1.0
 
 
 class ProviderError(RuntimeError):
-    """A non-retryable provider failure (e.g. a 4xx that isn't rate-limiting).
+    """A non-retryable provider failure: a 4xx that isn't rate-limiting, a
+    missing API-key environment variable, or a structurally malformed 200
+    body (missing/null content with no schema to parse it into).
 
-    Carries no API key: it is built from the status code and response URL only.
+    Carries no API key and no request body: built from the status code,
+    response URL, and/or a descriptive message only. ``usage`` is optional —
+    set when a malformed 200 body still contained a computable ``usage``
+    block (so the caller can still bill the ledger for a billed-but-malformed
+    call); ``None`` when usage could not be computed at all (bill nothing).
     """
+
+    def __init__(self, message: str, *, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
+class SchemaParseError(Exception):
+    """Raised when a 200 response's content fails schema validation.
+
+    Carries ``.usage`` (the already-computed :class:`Usage` for the billed
+    call — the caller bills it even though the reply was unusable),
+    ``.content`` (the raw text that failed to parse, possibly ``None``), and
+    ``.error`` (the validation failure message as a string). Never carries
+    the API key or the full request. The provider does not retry a parse
+    failure itself — that one-retry-with-error-appended contract belongs to
+    the caller (Task 2 runner).
+    """
+
+    def __init__(
+        self, *, usage: Usage | None, content: str | None, error: str
+    ) -> None:
+        super().__init__(f"schema parse failed: {error}")
+        self.usage = usage
+        self.content = content
+        self.error = error
 
 
 class TurnParked(Exception):
@@ -141,15 +188,32 @@ class CostLedger:
     written with the same flush+fsync durability as the event log. On
     construction the ledger reconstructs cumulative spend by replaying an
     existing file, so the budget hard-stop is correct across a kill/resume.
+
+    Replay mirrors the event log's tolerance (see ``runner.read_events``): a
+    truncated final line (a write killed mid-line, so the file does not end
+    in a newline) is skipped rather than raised; a malformed line anywhere
+    else is a hard error.
     """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._entries: list[CostEntry] = []
         if self.path.exists():
-            for line in self.path.read_text().splitlines():
-                if line.strip():
-                    self._entries.append(CostEntry.model_validate_json(line))
+            text = self.path.read_text()
+            if text:
+                ended_newline = text.endswith("\n")
+                lines = text.splitlines()
+                for idx, line in enumerate(lines):
+                    if not line.strip():
+                        continue
+                    try:
+                        self._entries.append(CostEntry.model_validate_json(line))
+                    except Exception:
+                        is_last = idx == len(lines) - 1
+                        if is_last and not ended_newline:
+                            # Truncated final write — ignore (kill-safe contract).
+                            break
+                        raise
 
     def record(
         self, spec: ModelSpec, usage: Usage, key: TurnKey | None = None
@@ -252,14 +316,22 @@ class Provider:
         """Rate-limited, retrying chat completion.
 
         Returns ``(obj, usage)`` where ``obj`` is a parsed ``schema`` instance
-        when a schema is given, else the raw text content. Raises
-        :class:`TurnParked` if retries are exhausted, :class:`ProviderError`
-        on a non-retryable HTTP error, or a ``pydantic`` ``ValidationError``
-        if a structured reply fails to parse (the caller owns the parse-retry
-        contract).
-        """
-        await self._bucket(model_spec).acquire()
+        when a schema is given, else the raw text content. Raises:
 
+        * :class:`TurnParked` if retries are exhausted.
+        * :class:`ProviderError` on a non-retryable HTTP error, a missing
+          API-key environment variable, or a structurally malformed 200 body
+          (missing/null content with no schema) — ``.usage`` is set when
+          computable, else ``None`` (bill nothing).
+        * :class:`SchemaParseError` when a 200's content fails schema
+          validation (including null content under a schema) — carries the
+          already-computed ``.usage`` so the caller can still bill the ledger
+          for the billed-but-unusable call and implement the one-retry
+          contract; the provider itself never retries a parse failure.
+
+        Each attempt (including retries) re-acquires a token from the
+        model's rate bucket, so a retry storm can't fire off-bucket.
+        """
         body: dict[str, Any] = {
             "model": model_spec.model_id,
             "messages": messages,
@@ -278,12 +350,35 @@ class Provider:
 
         resp = await self._request_with_retry(model_spec, body)
         data = resp.json()
-        usage = _parse_usage(data)
-        content = data["choices"][0]["message"]["content"]
+        usage = _try_parse_usage(data)
+
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                f"HTTP 200 from model {model_spec.model_id!r}: malformed "
+                f"response body ({exc})",
+                usage=usage,
+            ) from exc
+
+        if content is None:
+            if schema is None:
+                raise ProviderError(
+                    f"HTTP 200 from model {model_spec.model_id!r}: malformed "
+                    "response body (null content)",
+                    usage=usage,
+                )
+            raise SchemaParseError(usage=usage, content=content, error="content is null")
 
         if schema is None:
             return content, usage
-        return schema.model_validate_json(content), usage
+
+        try:
+            return schema.model_validate_json(content), usage
+        except ValidationError as exc:
+            raise SchemaParseError(
+                usage=usage, content=content, error=str(exc)
+            ) from exc
 
     # -- retry loop --------------------------------------------------------
 
@@ -291,12 +386,22 @@ class Provider:
         self, spec: ModelSpec, body: dict[str, Any]
     ) -> httpx.Response:
         url = f"{spec.base_url}/chat/completions"
+        try:
+            api_key = os.environ[spec.api_key_env]
+        except KeyError:
+            raise ProviderError(
+                f"missing API key: environment variable {spec.api_key_env!r} "
+                "is not set"
+            ) from None
         headers = {
-            "Authorization": f"Bearer {os.environ[spec.api_key_env]}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         retries = 0
         while True:
+            # Re-acquire on every attempt (including retries) so a retry
+            # storm can never fire off-bucket and blow through the rpm cap.
+            await self._bucket(spec).acquire()
             try:
                 resp = await self._client.post(url, json=body, headers=headers)
             except httpx.TransportError:
@@ -356,6 +461,15 @@ def _parse_usage(data: dict[str, Any]) -> Usage:
         prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
         completion_tokens=int(usage.get("completion_tokens", 0) or 0),
     )
+
+
+def _try_parse_usage(data: Any) -> Usage | None:
+    """Best-effort :func:`_parse_usage`: ``None`` (bill nothing) when the
+    body is too malformed to even compute usage from, e.g. not a mapping."""
+    try:
+        return _parse_usage(data)
+    except Exception:
+        return None
 
 
 def _retry_after(resp: httpx.Response) -> float | None:

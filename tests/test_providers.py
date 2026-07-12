@@ -17,6 +17,7 @@ from pnyx.providers import (
     CostLedger,
     Provider,
     ProviderError,
+    SchemaParseError,
     TokenBucket,
     TurnParked,
     check_openrouter_credits,
@@ -225,18 +226,118 @@ def test_usage_missing_defaults_to_zero(monkeypatch):
     assert usage == Usage(prompt_tokens=0, completion_tokens=0)
 
 
-def test_bad_structured_output_raises(monkeypatch):
+def test_bad_structured_output_raises_schema_parse_error(monkeypatch):
     monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+    raw = '{"prob":"not-a-number"}'
 
     def handler(request):
-        return _completion(content='{"prob":"not-a-number"}')
+        return _completion(content=raw)
 
     provider = Provider(client=_client(handler))
-    with pytest.raises(Exception):  # pydantic ValidationError propagates to caller
+    with pytest.raises(SchemaParseError) as exc:
         _run(provider.complete(
             messages=[], schema=Belief, model_spec=_spec(),
             temperature=0.7, max_tokens=8,
         ))
+    # The whole point of the typed exception: usage for this billed 200 must
+    # reach the caller instead of being swallowed with the ValidationError.
+    assert exc.value.usage == Usage(prompt_tokens=10, completion_tokens=20)
+    assert exc.value.content == raw
+    assert "prob" in exc.value.error
+
+
+def test_null_content_with_schema_raises_schema_parse_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+
+    def handler(request):
+        return _completion(content=None)
+
+    provider = Provider(client=_client(handler))
+    with pytest.raises(SchemaParseError) as exc:
+        _run(provider.complete(
+            messages=[], schema=Belief, model_spec=_spec(),
+            temperature=0.7, max_tokens=8,
+        ))
+    assert exc.value.content is None
+    assert exc.value.usage == Usage(prompt_tokens=10, completion_tokens=20)
+    assert exc.value.error
+
+
+# ---------------------------------------------------------------------------
+# Malformed 200 bodies -> typed ProviderError (not KeyError/IndexError)
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_choices_missing_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+
+    def handler(request):
+        return httpx.Response(
+            200, json={"usage": {"prompt_tokens": 5, "completion_tokens": 7}}
+        )
+
+    provider = Provider(client=_client(handler))
+    with pytest.raises(ProviderError) as exc:
+        _run(provider.complete(
+            messages=[], schema=None, model_spec=_spec(),
+            temperature=0.7, max_tokens=8,
+        ))
+    assert "malformed response body" in str(exc.value)
+    assert "200" in str(exc.value)
+    # usage was still computable from the malformed body -> bill it.
+    assert exc.value.usage == Usage(prompt_tokens=5, completion_tokens=7)
+
+
+def test_malformed_body_not_object_bills_nothing(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+
+    def handler(request):
+        return httpx.Response(200, json=["not", "an", "object"])
+
+    provider = Provider(client=_client(handler))
+    with pytest.raises(ProviderError) as exc:
+        _run(provider.complete(
+            messages=[], schema=None, model_spec=_spec(),
+            temperature=0.7, max_tokens=8,
+        ))
+    # Usage wasn't computable at all from this body -> bill nothing.
+    assert exc.value.usage is None
+
+
+def test_null_content_without_schema_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+
+    def handler(request):
+        return _completion(content=None)
+
+    provider = Provider(client=_client(handler))
+    with pytest.raises(ProviderError) as exc:
+        _run(provider.complete(
+            messages=[], schema=None, model_spec=_spec(),
+            temperature=0.7, max_tokens=8,
+        ))
+    assert "malformed response body" in str(exc.value)
+    assert exc.value.usage == Usage(prompt_tokens=10, completion_tokens=20)
+
+
+# ---------------------------------------------------------------------------
+# Missing API key env var -> typed ProviderError (not bare KeyError)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_api_key_raises_provider_error(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_KEY", raising=False)
+
+    def handler(request):
+        raise AssertionError("must not reach the network layer without a key")
+
+    provider = Provider(client=_client(handler))
+    with pytest.raises(ProviderError) as exc:
+        _run(provider.complete(
+            messages=[], schema=None, model_spec=_spec(),
+            temperature=0.7, max_tokens=8,
+        ))
+    assert "OPENROUTER_KEY" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +438,33 @@ def test_non_retryable_4xx_raises_not_parked(monkeypatch):
     assert calls["n"] == 1  # not retried
 
 
+def test_retry_reacquires_bucket_token(monkeypatch):
+    """Each attempt -- including retries -- must re-acquire from the rate
+    bucket, not just the first. With capacity 1 (rpm_limit=1) and zeroed
+    backoff jitter, the fake clock never advances on its own, so every
+    attempt after the first must pay a full 60s bucket-refill wait. Before
+    the fix (single acquire per `complete()` call) this second/third wait
+    would never happen and `clk.sleeps` would only contain the zero backoffs.
+    """
+    monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+    handler, calls = _seq_handler([500, 500])
+    clk = FakeClock()
+    provider = Provider(
+        client=_client(handler), clock=clk.time, sleep=clk.sleep,
+        jitter=lambda cap: 0.0,
+    )
+    spec = _spec(rpm_limit=1)  # capacity 1, refill rate 1/60 token/sec
+    _run(provider.complete(
+        messages=[], schema=None, model_spec=spec,
+        temperature=0.7, max_tokens=8,
+    ))
+    assert calls["n"] == 3  # initial + 2 retries: 3 attempts, 3 acquisitions
+    assert clk.sleeps == [
+        pytest.approx(0.0), pytest.approx(60.0),
+        pytest.approx(0.0), pytest.approx(60.0),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Cost ledger: math, persistence, resume, budget
 # ---------------------------------------------------------------------------
@@ -390,6 +518,45 @@ def test_ledger_budget_stop(tmp_path):
     assert led.over_budget(25.0) is False
 
 
+def test_ledger_tolerates_torn_final_line(tmp_path):
+    """A kill mid-write can leave a truncated final line with no trailing
+    newline -- mirrors runner.read_events' event-log tolerance. It must be
+    skipped, not raised, and the two complete entries before it still load."""
+    p = tmp_path / "costs.jsonl"
+    led = CostLedger(p)
+    led.record(_spec(model_id="a"), Usage(prompt_tokens=1_000_000, completion_tokens=0), _key())
+    led.record(_spec(model_id="a"), Usage(prompt_tokens=2_000_000, completion_tokens=0), _key())
+    expected_total = led.total()
+    # Simulate a kill mid-write: append a partial JSON fragment with NO
+    # trailing newline.
+    with open(p, "a") as f:
+        f.write('{"model_id": "a", "in_tokens": 999')
+
+    resumed = CostLedger(p)
+    assert resumed.total() == pytest.approx(expected_total)
+    assert len(resumed._entries) == 2
+    # And it keeps working / appending correctly afterward.
+    resumed.record(_spec(model_id="a"), Usage(prompt_tokens=1_000_000, completion_tokens=0), _key())
+    assert resumed.total() == pytest.approx(expected_total + resumed._entries[-1].cost)
+
+
+def test_ledger_malformed_non_final_line_is_hard_error(tmp_path):
+    """A malformed line that is NOT the final line (or the file ends in a
+    trailing newline) is a real corruption, not a kill-mid-write artifact --
+    it must raise, not be silently skipped."""
+    p = tmp_path / "costs.jsonl"
+    led = CostLedger(p)
+    led.record(_spec(model_id="a"), Usage(prompt_tokens=1_000_000, completion_tokens=0), _key())
+    # Corrupt a non-final line by appending garbage followed by a valid line.
+    with open(p, "a") as f:
+        f.write("not-json-garbage\n")
+        f.write(CostEntry(model_id="a", in_tokens=1, out_tokens=1, cost=0.0).model_dump_json())
+        f.write("\n")
+
+    with pytest.raises(Exception):
+        CostLedger(p)
+
+
 # ---------------------------------------------------------------------------
 # Key never leaks to logs
 # ---------------------------------------------------------------------------
@@ -425,6 +592,23 @@ def test_api_key_never_printed_on_park(monkeypatch, capsys):
             temperature=0.7, max_tokens=8,
         ))
     assert secret not in str(exc.value)
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+def test_api_key_never_printed_on_4xx(monkeypatch, capsys):
+    secret = "sk-super-secret-DEADBEEF"
+    monkeypatch.setenv("OPENROUTER_KEY", secret)
+    handler, _ = _seq_handler([403])
+    provider = Provider(client=_client(handler), jitter=lambda cap: 0.0)
+    with pytest.raises(ProviderError) as exc:
+        _run(provider.complete(
+            messages=[], schema=None, model_spec=_spec(),
+            temperature=0.7, max_tokens=8,
+        ))
+    assert secret not in str(exc.value)
+    assert secret not in repr(exc.value)
     captured = capsys.readouterr()
     assert secret not in captured.out
     assert secret not in captured.err
