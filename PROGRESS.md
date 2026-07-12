@@ -20,6 +20,9 @@
 ## Decisions log
 
 - 2026-07-13: v2 spec adopted (posterior-oracle design, two-pass elicitation, peer prediction deferred to sequel). Pre-registration frozen in SPEC.md.
+- 2026-07-13: P1 closed after five task reviews + one whole-branch review (all approved). Post-review fixes applied: SettlementEvent.subsidy docstring reconciled with market.py's non-degenerate definition (worst-case payout − collected revenue; the naive C-delta-minus-revenue telescopes to 0); post-trade bankroll floored at 0 (full-clamp buys can leave ~−1e-13 float residue that would fail TradeView ge=0 validation).
+- 2026-07-13: **Question-set design for P2+:** the 40+10 question dataset is generated ONCE (P2) and stored as versioned JSONL; every condition/seed loads the same file. Runtime question generation (and its per-condition seeding) is a MOCK-config-only path. This guarantees paired comparisons across conditions and seeds by construction.
+- Deferred (from final review): parse-failure accounting + stronger no-network guard land with providers in P3; multi-seed/multi-condition runtime generation seeding left as-is since file-based datasets moot it.
 
 ## Dependency additions beyond stdlib/pydantic/httpx/openai/numpy/pandas/matplotlib/vllm
 
