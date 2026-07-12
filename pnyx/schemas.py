@@ -27,7 +27,14 @@ import json
 import re
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 # --------------------------------------------------------------------------
 # Structured LLM outputs (exact fields per Global Constraints)
@@ -116,6 +123,66 @@ class QuestionRecord(BaseModel):
                         "ascending, deduplicated indices"
                     )
         return table
+
+
+# --------------------------------------------------------------------------
+# Generative environment configuration
+# --------------------------------------------------------------------------
+
+
+class EnvConfig(BaseModel):
+    """Configuration for the generative environment (see ``pnyx.env`` for the
+    generative model and oracle).
+
+    ``accuracies[i]`` is signal ``i``'s private-channel accuracy
+    P(private draw = s); ``lams[i]`` is its correlation weight (probability
+    the signal copies the common latent channel ``z`` instead of drawing a
+    private channel). ``a_z`` is the accuracy of ``z`` itself, P(z = s).
+
+    ``difficulty`` selects the target band for the all-signals posterior on
+    the favored side (``max(p, 1-p)``): ``"easy"`` requires >= 0.85, ``"hard"``
+    requires the 0.60-0.75 range. ``min_single_shard_margin`` is the minimum
+    absolute gap between the all-signals posterior and every single-signal
+    posterior. ``max_rejection_tries`` bounds the rejection sampler.
+    """
+
+    n_signals: int = Field(default=6, ge=1)
+    accuracies: list[float]
+    lams: list[float]
+    a_z: float = Field(default=0.8, ge=0.0, le=1.0)
+    difficulty: Literal["easy", "hard"]
+    min_single_shard_margin: float = Field(default=0.1, ge=0.0)
+    max_rejection_tries: int = Field(default=1000, ge=1)
+
+    @field_validator("accuracies")
+    @classmethod
+    def _validate_accuracies(cls, acc: list[float]) -> list[float]:
+        for a in acc:
+            if not (0.0 <= a <= 1.0):
+                raise ValueError(f"accuracy {a} must be in [0, 1]")
+        return acc
+
+    @field_validator("lams")
+    @classmethod
+    def _validate_lams(cls, lams: list[float]) -> list[float]:
+        for lam in lams:
+            if not (0.0 <= lam <= 1.0):
+                raise ValueError(f"lam {lam} must be in [0, 1]")
+        return lams
+
+    @model_validator(mode="after")
+    def _validate_lengths(self) -> "EnvConfig":
+        if len(self.accuracies) != self.n_signals:
+            raise ValueError(
+                f"accuracies has length {len(self.accuracies)}, "
+                f"expected n_signals={self.n_signals}"
+            )
+        if len(self.lams) != self.n_signals:
+            raise ValueError(
+                f"lams has length {len(self.lams)}, "
+                f"expected n_signals={self.n_signals}"
+            )
+        return self
 
 
 # --------------------------------------------------------------------------
