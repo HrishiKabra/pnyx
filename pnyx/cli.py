@@ -46,6 +46,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--config", required=True, help="path to a run config YAML")
     run_p.add_argument("--data-dir", default=None,
                        help="override the config's data_dir (log/output directory)")
+    run_p.add_argument("--override-budget", action="store_true",
+                       help="keep making LLM calls past the config budget_usd hard-stop")
 
     status_p = sub.add_parser("status", help="print turns done/remaining")
     status_p.add_argument("--config", required=True, help="path to a run config YAML")
@@ -77,7 +79,7 @@ def _cmd_run(args) -> int:
     config = load_config(args.config)
     if args.data_dir is not None:
         config = config.model_copy(update={"data_dir": args.data_dir})
-    run_experiment(config)
+    run_experiment(config, override_budget=args.override_budget)
     return 0
 
 

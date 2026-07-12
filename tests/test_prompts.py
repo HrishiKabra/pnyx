@@ -1,0 +1,156 @@
+"""Tests for pnyx.prompts — the versioned two-pass templates + persona catalogue.
+
+Golden-content checks (persona injected, evidence rendered, Pass-1 belief carried
+into the Pass-2 prompt) plus a scientific-integrity LEAKAGE GUARD asserting that
+no accuracy / latent-state / posterior / other-agent / shard-count string ever
+appears in a rendered prompt. Pure/offline — no network, no provider.
+"""
+
+import pnyx.prompts as prompts
+from pnyx.prompts import (
+    ADVERSARY_PERSONA,
+    PERSONAS,
+    PROMPT_VERSION,
+    pass1_messages,
+    pass2_messages,
+    render_evidence,
+    retry_user_message,
+)
+
+QUESTION = "Did Forklift 12 roll into the shelving racks?"
+SHARDS = [
+    "The pre-shift inspection checklist for Forklift 12 was signed off clean.",
+    "A dented rack upright was photographed near bay 7.",
+]
+
+
+def _text(messages) -> str:
+    return "\n".join(m["content"] for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# Versioning + persona catalogue
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_version_is_a_nonempty_string():
+    assert isinstance(PROMPT_VERSION, str) and PROMPT_VERSION
+
+
+def test_six_fixed_personas():
+    assert set(PERSONAS) == {
+        "base_rate_skeptic", "evidence_maximalist", "contrarian",
+        "domain_specialist", "kelly_sizer", "momentum_reader",
+    }
+    assert all(isinstance(v, str) and v for v in PERSONAS.values())
+
+
+def test_adversary_persona_is_separate_and_flagged():
+    # The adversary line exists (condition D) but is NOT selectable as an
+    # ordinary persona, so a pool config can never inject it by accident.
+    assert "adversary" in ADVERSARY_PERSONA.lower()
+    assert ADVERSARY_PERSONA not in PERSONAS.values()
+
+
+# ---------------------------------------------------------------------------
+# Structure + golden content
+# ---------------------------------------------------------------------------
+
+
+def test_pass1_has_system_and_user_with_question_and_evidence():
+    msgs = pass1_messages(QUESTION, SHARDS, "contrarian")
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    text = _text(msgs)
+    assert QUESTION in text
+    for shard in SHARDS:
+        assert shard in text
+    # SPEC §9 Pass-1 framing.
+    assert "Given ONLY the evidence below" in text
+    # Persona injected.
+    assert PERSONAS["contrarian"] in text
+
+
+def test_evidence_rendered_as_bullets():
+    rendered = render_evidence(SHARDS)
+    assert rendered.startswith("Evidence:")
+    for shard in SHARDS:
+        assert f"- {shard}" in rendered
+
+
+def test_no_shards_renders_explicit_empty_evidence():
+    rendered = render_evidence([])
+    assert "Evidence:" in rendered
+    assert "no evidence" in rendered.lower()
+
+
+def test_pass2_carries_pass1_belief_and_market_context():
+    msgs = pass2_messages(
+        QUESTION, SHARDS, "kelly_sizer",
+        price=0.42, round=2, n_rounds=3, bankroll=88.5,
+        max_affordable_yes=120.0, max_affordable_no=95.0, pass1_prob=0.73,
+    )
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    text = _text(msgs)
+    # Pass-1 belief carried in (SPEC §9: "your prior analysis concluded").
+    assert "prior analysis concluded" in text
+    assert "0.73" in text
+    # Market context present.
+    assert "0.42" in text  # price
+    assert "round 2 of 3" in text
+    assert PERSONAS["kelly_sizer"] in text
+    assert QUESTION in text
+
+
+def test_unknown_persona_passes_through_verbatim():
+    line = "Persona: you are a one-off custom persona."
+    msgs = pass1_messages(QUESTION, SHARDS, line)
+    assert line in _text(msgs)
+
+
+def test_none_persona_omits_persona_line():
+    msgs = pass1_messages(QUESTION, SHARDS, None)
+    # No dangling "Persona:" label when unset.
+    assert "Persona:" not in _text(msgs)
+
+
+def test_retry_message_includes_error_text():
+    m = retry_user_message("prob: field required")
+    assert m["role"] == "user"
+    assert "prob: field required" in m["content"]
+    assert "JSON" in m["content"]
+
+
+# ---------------------------------------------------------------------------
+# Leakage guard (scientific integrity) — the load-bearing test
+# ---------------------------------------------------------------------------
+
+# Strings that must NEVER appear in any rendered prompt: accuracies, latent
+# state, posteriors, other-agent info, shard counts beyond the agent's own.
+_FORBIDDEN = [
+    "accuracy", "accuracies", "latent", "posterior", "oracle",
+    "other agent", "other agents", "true probability is 0",
+    "signal 0", "signal 1", "6 shards", "of 6", "shard 0", "shard 1",
+    "lam", "a_z",
+]
+
+
+def test_prompts_never_leak_hidden_state():
+    # Exercise every persona for both passes and scan the full rendered text.
+    for persona in list(PERSONAS) + [None]:
+        p1 = _text(pass1_messages(QUESTION, SHARDS, persona)).lower()
+        p2 = _text(pass2_messages(
+            QUESTION, SHARDS, persona,
+            price=0.5, round=1, n_rounds=3, bankroll=100.0,
+            max_affordable_yes=50.0, max_affordable_no=50.0, pass1_prob=0.5,
+        )).lower()
+        for banned in _FORBIDDEN:
+            assert banned not in p1, f"pass1 leaked {banned!r}"
+            assert banned not in p2, f"pass2 leaked {banned!r}"
+
+
+def test_format_constants_have_no_hidden_state_vocabulary():
+    # Belt-and-suspenders: the reusable format constants must never mention the
+    # generative model's hidden quantities (a future edit can't sneak one in).
+    for banned in ("accuracies", "latent state", "posterior"):
+        assert banned not in prompts._BELIEF_FORMAT.lower()
+        assert banned not in prompts._TRADE_FORMAT.lower()

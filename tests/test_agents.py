@@ -66,8 +66,10 @@ def test_agent_spec_defaults():
 
 
 def test_agent_spec_kind_literal_enforced():
+    # "mock" and "llm" are the only valid kinds; anything else is rejected.
+    assert AgentSpec(agent_id="a0", shard_indices=[0], kind="llm").kind == "llm"
     with pytest.raises(ValidationError):
-        AgentSpec(agent_id="a0", shard_indices=[0], kind="llm")
+        AgentSpec(agent_id="a0", shard_indices=[0], kind="bogus")
 
 
 def test_agent_spec_bankroll_negative_rejected():

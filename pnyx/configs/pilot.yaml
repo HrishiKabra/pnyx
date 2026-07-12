@@ -1,0 +1,71 @@
+# Pnyx P3 pilot — pool A (6× cheap paid workhorse), real LLM calls.
+#
+# Runs the two-pass protocol over the frozen 10-question held-out pilot dataset
+# (datasets/questions_pilot_v1.jsonl) with six DeepSeek-v4-flash agents, one per
+# single-signal shard, each wearing one of the six fixed personas. LMSR b=40,
+# bankroll=100/agent, 3 rounds, wealth resets per question.
+#
+# Budget: belt-and-suspenders cap at $2 (the pilot is expected to cost ~$1–2).
+# The runner refuses NEW LLM calls once cumulative ledger cost reaches budget_usd
+# unless `--override-budget`. The API key is read from $OPENROUTER_KEY at call
+# time (never stored/logged).
+
+condition: PILOT
+seeds: [0]
+n_questions: 10
+b: 40.0
+n_rounds: 3
+wealth_persistent: false
+data_dir: data/pilot
+questions_file: datasets/questions_pilot_v1.jsonl
+
+budget_usd: 2.0
+temperature: 0.7
+max_tokens: 512
+
+env:
+  n_signals: 6
+  accuracies: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+  lams: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  a_z: 0.8
+  difficulty: easy
+  min_single_shard_margin: 0.1
+  max_rejection_tries: 2000
+
+models:
+  # Model B / pool-A workhorse (locked decision record).
+  flash:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_KEY
+    model_id: deepseek/deepseek-v4-flash
+    price_in: 0.077
+    price_out: 0.154
+    rpm_limit: 300
+    supports_json_schema: true
+  # Model C (free) — available for homogeneous free-pool arms (H2). 18 rpm,
+  # 50 req/day free-tier cap; triggers the startup credit check when selected.
+  # free:
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_KEY
+  #   model_id: qwen/qwen3-next-80b-a3b-instruct:free
+  #   price_in: 0.0
+  #   price_out: 0.0
+  #   rpm_limit: 18
+  #   supports_json_schema: true
+  # Model A (local vLLM on Colab) — NOT part of P3 execution; kept for provenance.
+  # local:
+  #   base_url: http://localhost:8000/v1
+  #   api_key_env: VLLM_KEY
+  #   model_id: meta-llama/Llama-3.1-8B-Instruct
+  #   price_in: 0.0
+  #   price_out: 0.0
+  #   rpm_limit: 60
+  #   supports_json_schema: true
+
+agents:
+  - {agent_id: agent0, shard_indices: [0], bankroll: 100.0, kind: llm, model: flash, persona: base_rate_skeptic}
+  - {agent_id: agent1, shard_indices: [1], bankroll: 100.0, kind: llm, model: flash, persona: evidence_maximalist}
+  - {agent_id: agent2, shard_indices: [2], bankroll: 100.0, kind: llm, model: flash, persona: contrarian}
+  - {agent_id: agent3, shard_indices: [3], bankroll: 100.0, kind: llm, model: flash, persona: domain_specialist}
+  - {agent_id: agent4, shard_indices: [4], bankroll: 100.0, kind: llm, model: flash, persona: kelly_sizer}
+  - {agent_id: agent5, shard_indices: [5], bankroll: 100.0, kind: llm, model: flash, persona: momentum_reader}

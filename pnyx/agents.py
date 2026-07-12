@@ -14,13 +14,59 @@ requested share count is clamped server-side regardless of what the agent
 asks for (Global Constraints — "never trust the agent's number").
 """
 
-from typing import Literal, Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
-from pnyx.schemas import AgentSpec, Belief, BeliefView, Trade, TradeView
+from pnyx.prompts import PROMPT_VERSION, pass1_messages, pass2_messages, retry_user_message
+from pnyx.providers import ProviderError, SchemaParseError
+from pnyx.schemas import (
+    AgentSpec,
+    Belief,
+    BeliefView,
+    ModelSpec,
+    Trade,
+    TradeView,
+    Usage,
+)
 
-__all__ = ["AgentSpec", "Agent", "MockAgent"]
+__all__ = [
+    "AgentSpec",
+    "Agent",
+    "MockAgent",
+    "LLMAgent",
+    "BeliefResult",
+    "TradeResult",
+    "PROMPT_VERSION",
+]
+
+# What the agent bills each completed provider call against. The runner passes
+# a closure binding the cost ledger + this turn's key; ``None`` usage is a
+# no-op (nothing to bill).
+BillFn = Callable[[Usage | None], None]
+
+# Default output cap when the config leaves ``max_tokens`` unset — the Belief /
+# Trade payloads are tiny, but rationale strings can run to a few sentences.
+_DEFAULT_MAX_TOKENS = 512
+
+
+@dataclass
+class BeliefResult:
+    """A Pass-1 elicitation outcome: the belief plus whether it is the
+    parse-failure fallback (``prob=0.5`` recorded with ``parse_failed=True``)."""
+
+    belief: Belief
+    parse_failed: bool
+
+
+@dataclass
+class TradeResult:
+    """A Pass-2 trade outcome: the trade plus the parse-failure flag (a failed
+    parse falls back to ``action="hold"`` / ``belief=0.5``)."""
+
+    trade: Trade
+    parse_failed: bool
 
 
 @runtime_checkable
@@ -128,3 +174,126 @@ class MockAgent:
         return Trade(
             belief=belief, action=action, shares=shares, rationale=self.TRADE_RATIONALE
         )
+
+
+class LLMAgent:
+    """Provider-backed agent implementing the two-pass protocol over prompts.
+
+    Constructed with its :class:`AgentSpec`, the resolved :class:`ModelSpec`,
+    a persona key (into :data:`pnyx.prompts.PERSONAS`), and a shared provider
+    handle. ``elicit_belief`` / ``decide_trade`` build the versioned prompts
+    from the view's ``question_text`` + the agent's own ``shard_texts``, call
+    the provider with the relevant schema, and implement the ONE-retry parse
+    contract (Global Constraints):
+
+    * On success, bill the call's usage and return the parsed output.
+    * On a :class:`SchemaParseError`, bill it, then retry ONCE with the
+      validation error appended to the messages.
+    * On a second parse failure, bill it and return the neutral fallback
+      (``prob=0.5`` / ``action="hold"``) flagged ``parse_failed=True``.
+    * :class:`ProviderError` is billed (if it carries usage) then re-raised;
+      :class:`TurnParked` propagates unbilled. The runner treats both as a
+      parked turn (nothing logged, resume retries it).
+
+    Billing is done through the injected ``bill`` callback so the cost ledger
+    (and the turn key it is written under) stays owned by the runner: EVERY
+    provider call is billed at the moment it completes — success, parse
+    failure, or errored — never missed on a propagating exception.
+
+    The provider call itself is the only awaited point; the agent holds no
+    per-turn state, so one instance per (agent_id) is reused across a run.
+    """
+
+    def __init__(
+        self,
+        spec: AgentSpec,
+        model_spec: ModelSpec,
+        persona: str | None,
+        provider: Any,
+        *,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> None:
+        self.spec = spec
+        self.model_spec = model_spec
+        self.persona = persona
+        self.provider = provider
+        self.temperature = temperature
+        self.max_tokens = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
+
+    async def _complete_with_retry(
+        self, messages: list[dict[str, str]], schema: type, bill: BillFn
+    ):
+        """Run the one-retry parse contract for a single turn.
+
+        Returns ``(parsed_or_None, parse_failed)``: ``parsed_or_None`` is the
+        parsed schema object on success, or ``None`` when both attempts failed
+        to parse (the caller substitutes the neutral fallback). Bills every
+        completed call. Propagates :class:`ProviderError` (after billing its
+        usage) and :class:`TurnParked` (unbilled) for the runner to park.
+        """
+        try:
+            obj, usage = await self.provider.complete(
+                messages, schema, self.model_spec, self.temperature, self.max_tokens
+            )
+            bill(usage)
+            return obj, False
+        except ProviderError as exc:
+            bill(exc.usage)
+            raise
+        except SchemaParseError as first:
+            # Python clears ``first`` at the end of the except block, so capture
+            # the error text now for the retry prompt.
+            bill(first.usage)
+            first_error = first.error
+
+        retry_messages = list(messages) + [retry_user_message(first_error)]
+        try:
+            obj, usage = await self.provider.complete(
+                retry_messages, schema, self.model_spec, self.temperature,
+                self.max_tokens,
+            )
+            bill(usage)
+            return obj, False
+        except ProviderError as exc:
+            bill(exc.usage)
+            raise
+        except SchemaParseError as second:
+            bill(second.usage)
+            return None, True
+
+    async def elicit_belief(self, view: BeliefView, *, bill: BillFn) -> BeliefResult:
+        messages = pass1_messages(view.question_text, view.shard_texts, self.persona)
+        obj, parse_failed = await self._complete_with_retry(messages, Belief, bill)
+        if parse_failed:
+            return BeliefResult(
+                belief=Belief(prob=0.5, rationale="parse failed after one retry"),
+                parse_failed=True,
+            )
+        return BeliefResult(belief=obj, parse_failed=False)
+
+    async def decide_trade(
+        self, view: TradeView, *, pass1_prob: float, bill: BillFn
+    ) -> TradeResult:
+        messages = pass2_messages(
+            view.question_text,
+            view.shard_texts,
+            self.persona,
+            price=view.price,
+            round=view.round,
+            n_rounds=view.n_rounds,
+            bankroll=view.bankroll,
+            max_affordable_yes=view.max_affordable_yes,
+            max_affordable_no=view.max_affordable_no,
+            pass1_prob=pass1_prob,
+        )
+        obj, parse_failed = await self._complete_with_retry(messages, Trade, bill)
+        if parse_failed:
+            return TradeResult(
+                trade=Trade(
+                    belief=0.5, action="hold", shares=0.0,
+                    rationale="parse failed after one retry",
+                ),
+                parse_failed=True,
+            )
+        return TradeResult(trade=obj, parse_failed=False)

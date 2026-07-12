@@ -87,6 +87,12 @@ class BeliefView(BaseModel):
     question_id: str
     signal_values: dict[int, int]
     persona: str = ""
+    # Prose the P3 LLM agent actually reads (populated by the runner from the
+    # QuestionRecord: ``question_text`` and the agent's OWN shard texts). Empty
+    # on the mock path — MockAgent never reads them. Additive: existing mock
+    # callers construct BeliefView without these and get the defaults.
+    question_text: str = ""
+    shard_texts: list[str] = Field(default_factory=list)
 
 
 class TradeView(BeliefView):
@@ -112,16 +118,19 @@ class AgentSpec(BaseModel):
     """Minimal P1 agent configuration: identity, shard assignment, starting
     bankroll, and kind.
 
-    ``kind`` is a closed Literal with a single P1 value; real LLM agent
-    kinds (with model/persona/provider fields) arrive in P3, so adding one
-    later is a deliberate, visible schema change rather than a silent
-    string.
+    ``kind`` selects the agent implementation: ``"mock"`` (the deterministic
+    zero-intelligence trader) or ``"llm"`` (a provider-backed agent, P3). An
+    ``"llm"`` agent additionally names ``model`` (a key into
+    ``RunConfig.models``) and an optional ``persona`` (a key into
+    ``pnyx.prompts.PERSONAS``). Both are ignored on the mock path.
     """
 
     agent_id: str
     shard_indices: list[int]
     bankroll: float = Field(default=100.0, ge=0.0)
-    kind: Literal["mock"] = "mock"
+    kind: Literal["mock", "llm"] = "mock"
+    model: str | None = None
+    persona: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -328,50 +337,6 @@ class EnvConfig(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Run configuration (loaded from configs/*.yaml by the runner)
-# --------------------------------------------------------------------------
-
-
-class RunConfig(BaseModel):
-    """Top-level experiment configuration for one condition.
-
-    Loaded from a YAML file (see ``pnyx/configs/mock.yaml``). Lives here in
-    ``schemas.py`` because Global Constraints make this file the single source
-    of truth for every Pydantic model. One event log is written per
-    ``(condition, seed)`` under ``data_dir``; the generated ``QuestionRecord``
-    set is persisted alongside it so a resumed run never re-samples questions.
-    """
-
-    condition: str
-    seeds: list[int] = Field(min_length=1)
-    n_questions: int = Field(ge=1)
-    b: float = Field(default=40.0, gt=0.0)
-    n_rounds: int = Field(default=3, ge=1)
-    wealth_persistent: bool = False
-    data_dir: str
-    # When set, the runner loads QuestionRecords from this JSONL dataset instead
-    # of generating them (requiring shards + question_text on each). The generate
-    # path stays for the MOCK config. See ``runner._load_or_generate_questions``.
-    questions_file: str | None = None
-    env: EnvConfig
-    agents: list[AgentSpec] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _validate_shards(self) -> "RunConfig":
-        for spec in self.agents:
-            for idx in spec.shard_indices:
-                if not (0 <= idx < self.env.n_signals):
-                    raise ValueError(
-                        f"agent {spec.agent_id!r} shard index {idx} out of range "
-                        f"[0, {self.env.n_signals})"
-                    )
-        ids = [a.agent_id for a in self.agents]
-        if len(set(ids)) != len(ids):
-            raise ValueError(f"agent_id values must be unique, got {ids}")
-        return self
-
-
-# --------------------------------------------------------------------------
 # Provider / model configuration + cost accounting (P3)
 # --------------------------------------------------------------------------
 
@@ -405,6 +370,70 @@ class Usage(BaseModel):
 
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
+
+
+# --------------------------------------------------------------------------
+# Run configuration (loaded from configs/*.yaml by the runner)
+# --------------------------------------------------------------------------
+
+
+class RunConfig(BaseModel):
+    """Top-level experiment configuration for one condition.
+
+    Loaded from a YAML file (see ``pnyx/configs/mock.yaml``). Lives here in
+    ``schemas.py`` because Global Constraints make this file the single source
+    of truth for every Pydantic model. One event log is written per
+    ``(condition, seed)`` under ``data_dir``; the generated ``QuestionRecord``
+    set is persisted alongside it so a resumed run never re-samples questions.
+    """
+
+    condition: str
+    seeds: list[int] = Field(min_length=1)
+    n_questions: int = Field(ge=1)
+    b: float = Field(default=40.0, gt=0.0)
+    n_rounds: int = Field(default=3, ge=1)
+    wealth_persistent: bool = False
+    data_dir: str
+    # When set, the runner loads QuestionRecords from this JSONL dataset instead
+    # of generating them (requiring shards + question_text on each). The generate
+    # path stays for the MOCK config. See ``runner._load_or_generate_questions``.
+    questions_file: str | None = None
+    env: EnvConfig
+    agents: list[AgentSpec] = Field(min_length=1)
+    # P3 provider pool: maps a config-local model key (referenced by
+    # ``AgentSpec.model``) to its endpoint spec. Empty on the mock path.
+    models: dict[str, ModelSpec] = Field(default_factory=dict)
+    # Budget hard-stop (US dollars): the runner refuses NEW LLM calls once the
+    # cumulative cost ledger reaches this, unless ``--override-budget``.
+    budget_usd: float = Field(default=25.0, ge=0.0)
+    # Sampling controls for LLM agents (ignored on the mock path).
+    temperature: float = Field(default=0.7, ge=0.0)
+    max_tokens: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_shards(self) -> "RunConfig":
+        for spec in self.agents:
+            for idx in spec.shard_indices:
+                if not (0 <= idx < self.env.n_signals):
+                    raise ValueError(
+                        f"agent {spec.agent_id!r} shard index {idx} out of range "
+                        f"[0, {self.env.n_signals})"
+                    )
+        ids = [a.agent_id for a in self.agents]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"agent_id values must be unique, got {ids}")
+        for spec in self.agents:
+            if spec.kind == "llm":
+                if spec.model is None:
+                    raise ValueError(
+                        f"agent {spec.agent_id!r} kind='llm' must name a model"
+                    )
+                if spec.model not in self.models:
+                    raise ValueError(
+                        f"agent {spec.agent_id!r} references model {spec.model!r} "
+                        f"not in models map {sorted(self.models)}"
+                    )
+        return self
 
 
 # --------------------------------------------------------------------------
@@ -480,6 +509,10 @@ class BeliefEvent(_EventBase):
     key: TurnKey
     belief: Belief
     parse_failed: bool = False
+    # Version of the prompt templates that produced this belief (P3 LLM path);
+    # None on the mock path. Additive optional field — carries the meta that
+    # BeliefEvent otherwise lacks.
+    prompt_version: str | None = None
     ts: float | None  # wall-clock write time; excluded from identity comparisons
 
 
@@ -495,6 +528,7 @@ class TradeEvent(_EventBase):
     price_after: float = Field(ge=0.0, le=1.0)
     bankroll_after: float
     parse_failed: bool = False
+    prompt_version: str | None = None
     ts: float | None
 
 

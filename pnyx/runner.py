@@ -61,19 +61,32 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import yaml
 
-from pnyx.agents import MockAgent
+from pnyx.agents import LLMAgent, MockAgent
 from pnyx.env import generate_question, subset_key
 from pnyx.market import Market, max_affordable_shares
+from pnyx.prompts import PROMPT_VERSION
+from pnyx.providers import (
+    CostLedger,
+    Provider,
+    ProviderError,
+    TurnParked,
+    check_openrouter_credits,
+    warn_low_credits,
+)
 from pnyx.schemas import (
     Belief,
     BeliefEvent,
     BeliefView,
+    CostEntry,
+    ModelSpec,
     QuestionRecord,
     RunConfig,
     SettlementEvent,
@@ -89,12 +102,34 @@ __all__ = [
     "run_experiment",
     "log_path_for",
     "questions_path_for",
+    "costs_path_for",
     "read_events",
     "ts_stripped_lines",
     "status_report",
 ]
 
 _PRICE_TOL = 1e-9
+
+
+class _BudgetStop(Exception):
+    """Internal: unwind out of the run loop when the budget hard-stop trips.
+
+    Raised before a would-be LLM call once cumulative ledger cost has reached
+    ``config.budget_usd``. Caught at the top of the run, which prints a clear
+    message and exits cleanly — every not-yet-completed LLM turn is thereby
+    parked (nothing logged) and picked up on a later resume.
+    """
+
+
+@dataclass
+class _RunResources:
+    """The P3 provider-backed run state threaded through the seed / question
+    helpers. All ``None``/``False`` on the pure-mock path (no provider, no
+    ledger, no budget)."""
+
+    provider: object | None = None
+    ledger: CostLedger | None = None
+    override_budget: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +178,15 @@ def log_path_for(config: RunConfig, seed: int) -> Path:
 def questions_path_for(config: RunConfig, seed: int) -> Path:
     """Persisted-questions sidecar path for one (condition, seed)."""
     return Path(config.data_dir) / f"{_stem(config, seed)}.questions.jsonl"
+
+
+def costs_path_for(config: RunConfig) -> Path:
+    """Append-only cost-ledger path for a condition (cumulative across seeds).
+
+    One ledger per condition so the budget hard-stop is a single cumulative
+    total for the whole run, resume-tolerant across kills (see
+    :class:`pnyx.providers.CostLedger`)."""
+    return Path(config.data_dir) / f"{config.condition}.costs.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -290,13 +334,101 @@ def _turn_delay() -> float:
     return float(os.environ.get("PNYX_TURN_DELAY", "0") or "0")
 
 
-def run_experiment(config: RunConfig) -> None:
-    """Run (or resume) the full experiment for every seed in the config."""
-    for seed in config.seeds:
-        asyncio.run(_run_seed(config, seed))
+def run_experiment(
+    config: RunConfig,
+    *,
+    provider: object | None = None,
+    override_budget: bool = False,
+) -> None:
+    """Run (or resume) the full experiment for every seed in the config.
+
+    On the pure-mock path (no ``kind: llm`` agents) this is exactly the P1
+    behaviour: no provider, no ledger, no budget. When any LLM agent is present
+    a shared :class:`~pnyx.providers.Provider` and a cumulative
+    :class:`~pnyx.providers.CostLedger` are created (the provider may be
+    injected for tests — a fake with an async ``complete``), and a single
+    ``asyncio.run`` wraps every seed so one httpx client / event loop is reused
+    across seeds. The budget hard-stop unwinds via :class:`_BudgetStop`.
+    """
+    asyncio.run(_run_all(config, provider, override_budget))
 
 
-async def _run_seed(config: RunConfig, seed: int) -> None:
+def _free_tier_models(config: RunConfig) -> list[ModelSpec]:
+    """Pool models whose ``model_id`` marks a free OpenRouter tier (``:free``);
+    their presence triggers the startup credit check."""
+    return [m for m in config.models.values() if m.model_id.endswith(":free")]
+
+
+async def _free_tier_check(config: RunConfig, provider: Provider) -> None:
+    """Loud (non-blocking) warning when a ``:free`` model is in the pool and the
+    key's lifetime OpenRouter credit is under $10. Best-effort: a missing key or
+    any error is swallowed (the credit check must never block a run)."""
+    free = _free_tier_models(config)
+    if not free:
+        return
+    spec = free[0]
+    api_key = os.environ.get(spec.api_key_env)
+    if not api_key:
+        return
+    client = getattr(provider, "_client", None)
+    if client is None:
+        return
+    credits = await check_openrouter_credits(client, api_key, base_url=spec.base_url)
+    warn_low_credits(credits)
+
+
+async def _run_all(
+    config: RunConfig, provider: object | None, override_budget: bool
+) -> None:
+    has_llm = any(a.kind == "llm" for a in config.agents)
+    resources = _RunResources(override_budget=override_budget)
+    own_provider: Provider | None = None
+    if has_llm:
+        resources.ledger = CostLedger(costs_path_for(config))
+        if provider is None:
+            own_provider = Provider()
+            provider = own_provider
+            await _free_tier_check(config, own_provider)
+        resources.provider = provider
+    try:
+        for seed in config.seeds:
+            await _run_seed(config, seed, resources)
+    except _BudgetStop:
+        _print_budget_stop(config, resources)
+    finally:
+        if own_provider is not None:
+            await own_provider.aclose()
+
+
+def _print_budget_stop(config: RunConfig, resources: _RunResources) -> None:
+    spent = resources.ledger.total() if resources.ledger is not None else 0.0
+    print(
+        f"[pnyx] budget hard-stop: cumulative LLM spend ${spent:.4f} reached the "
+        f"${config.budget_usd:.2f} budget. Remaining LLM turns are parked "
+        "(nothing lost) — resume with a higher budget_usd or --override-budget.",
+        file=sys.stderr,
+    )
+
+
+def _build_llm_agents(
+    config: RunConfig, resources: _RunResources
+) -> dict[str, LLMAgent]:
+    """One reusable LLMAgent per ``kind: llm`` agent (stateless per turn)."""
+    agents: dict[str, LLMAgent] = {}
+    for spec in config.agents:
+        if spec.kind == "llm":
+            agents[spec.agent_id] = LLMAgent(
+                spec,
+                config.models[spec.model],
+                spec.persona,
+                resources.provider,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            )
+    return agents
+
+
+async def _run_seed(config: RunConfig, seed: int, resources: _RunResources) -> None:
     questions = _load_or_generate_questions(config, seed)
     log = log_path_for(config, seed)
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -311,29 +443,65 @@ async def _run_seed(config: RunConfig, seed: int) -> None:
     }
 
     agents_by_id = {a.agent_id: a for a in config.agents}
+    llm_agents = _build_llm_agents(config, resources)
     # Persistent-wealth carryover; ignored when wealth_persistent is False.
     wealth: dict[str, float] = {a.agent_id: a.bankroll for a in config.agents}
 
     with open(log, "a") as f:
         for q in questions:
             await _run_question(
-                config, seed, q, agents_by_id, events_by_key, settled,
-                settlements_by_q, wealth, f,
+                config, seed, q, agents_by_id, llm_agents, resources,
+                events_by_key, settled, settlements_by_q, wealth, f,
             )
 
 
+def _view_prose(q: QuestionRecord, spec) -> tuple[str, list[str]]:
+    """The agent's OWN rendered prose for a question: (question_text, shard
+    texts sliced by the agent's shard_indices). Empty on generated (mock)
+    questions that carry no prose — MockAgent never reads them."""
+    question_text = q.question_text or ""
+    shard_texts = (
+        [q.shards[i] for i in spec.shard_indices] if q.shards else []
+    )
+    return question_text, shard_texts
+
+
+def _make_bill(resources: _RunResources, model_spec: ModelSpec, key: TurnKey):
+    """A billing closure the LLMAgent calls for every completed provider call:
+    records the usage against the run's cost ledger under this turn's key."""
+    def bill(usage) -> None:
+        if usage is not None and resources.ledger is not None:
+            resources.ledger.record(model_spec, usage, key)
+    return bill
+
+
+def _budget_gate(config: RunConfig, resources: _RunResources) -> None:
+    """Raise :class:`_BudgetStop` before a new LLM call once the ledger has
+    reached the budget (unless overridden)."""
+    if (
+        resources.ledger is not None
+        and not resources.override_budget
+        and resources.ledger.over_budget(config.budget_usd)
+    ):
+        raise _BudgetStop()
+
+
 async def _run_question(
-    config, seed, q, agents_by_id, events_by_key, settled, settlements_by_q,
-    wealth, f,
+    config, seed, q, agents_by_id, llm_agents, resources, events_by_key,
+    settled, settlements_by_q, wealth, f,
 ) -> None:
     qid = q.question_id
     condition = config.condition
     delay = _turn_delay()
 
+    # Oracle posteriors only for MOCK agents (they receive it at construction);
+    # LLM agents must NEVER see a posterior, so we don't even look one up.
     oracle = {
         a.agent_id: q.posterior_table[subset_key(a.shard_indices)]
-        for a in config.agents
+        for a in config.agents if a.kind == "mock"
     }
+    # Each agent's own Pass-1 probability, carried into its Pass-2 prompt.
+    pass1_probs: dict[str, float] = {}
 
     # ---- Pass 1: independent beliefs -------------------------------------
     for spec in config.agents:
@@ -341,15 +509,45 @@ async def _run_question(
             condition=condition, seed=seed, question_id=qid,
             phase="independent", round=0, agent_id=spec.agent_id,
         )
-        if key.as_tuple() in events_by_key:
+        logged = events_by_key.get(key.as_tuple())
+        if logged is not None:
+            pass1_probs[spec.agent_id] = logged.belief.prob
             continue
-        agent = MockAgent(oracle[spec.agent_id], _rng(seed, "belief", qid, spec.agent_id))
+
+        question_text, shard_texts = _view_prose(q, spec)
         view = BeliefView(
             question_id=qid,
             signal_values={i: q.signals[i].value for i in spec.shard_indices},
+            persona=spec.persona or "",
+            question_text=question_text,
+            shard_texts=shard_texts,
         )
-        belief: Belief = await _elicit(agent, view)
-        _append_event(f, BeliefEvent(key=key, belief=belief, ts=time.time()))
+
+        if spec.kind == "llm":
+            _budget_gate(config, resources)
+            bill = _make_bill(resources, config.models[spec.model], key)
+            try:
+                result = await llm_agents[spec.agent_id].elicit_belief(view, bill=bill)
+            except (TurnParked, ProviderError):
+                # Provider unavailable: park the whole question (nothing logged
+                # from here on), resume retries it. See module docstring.
+                return
+            belief = result.belief
+            parse_failed = result.parse_failed
+            prompt_version = PROMPT_VERSION
+        else:
+            agent = MockAgent(
+                oracle[spec.agent_id], _rng(seed, "belief", qid, spec.agent_id)
+            )
+            belief = await _elicit(agent, view)
+            parse_failed = False
+            prompt_version = None
+
+        pass1_probs[spec.agent_id] = belief.prob
+        _append_event(f, BeliefEvent(
+            key=key, belief=belief, parse_failed=parse_failed,
+            prompt_version=prompt_version, ts=time.time(),
+        ))
         if delay:
             await asyncio.sleep(delay)
 
@@ -382,10 +580,13 @@ async def _run_question(
             max_yes = max_affordable_shares(market.q_yes, market.q_no, "yes", cash, config.b)
             max_no = max_affordable_shares(market.q_yes, market.q_no, "no", cash, config.b)
             spec = agents_by_id[agent_id]
-            agent = MockAgent(oracle[agent_id], _rng(seed, "trade", qid, rnd, agent_id))
+            question_text, shard_texts = _view_prose(q, spec)
             view = TradeView(
                 question_id=qid,
                 signal_values={i: q.signals[i].value for i in spec.shard_indices},
+                persona=spec.persona or "",
+                question_text=question_text,
+                shard_texts=shard_texts,
                 price=price_before,
                 round=rnd,
                 n_rounds=config.n_rounds,
@@ -393,7 +594,27 @@ async def _run_question(
                 max_affordable_yes=max_yes,
                 max_affordable_no=max_no,
             )
-            trade: Trade = await _decide(agent, view)
+
+            if spec.kind == "llm":
+                _budget_gate(config, resources)
+                bill = _make_bill(resources, config.models[spec.model], key)
+                try:
+                    result = await llm_agents[agent_id].decide_trade(
+                        view, pass1_prob=pass1_probs.get(agent_id, 0.5), bill=bill,
+                    )
+                except (TurnParked, ProviderError):
+                    # Park the rest of THIS question's market so no later turn
+                    # is logged out of order (replay reconstructs only from
+                    # logged trades). No settlement — resume retries from here.
+                    return
+                trade = result.trade
+                parse_failed = result.parse_failed
+                prompt_version = PROMPT_VERSION
+            else:
+                agent = MockAgent(oracle[agent_id], _rng(seed, "trade", qid, rnd, agent_id))
+                trade = await _decide(agent, view)
+                parse_failed = False
+                prompt_version = None
 
             executed = 0.0
             cost = 0.0
@@ -409,7 +630,8 @@ async def _run_question(
             _append_event(f, TradeEvent(
                 key=key, trade=trade, executed_shares=executed, cost=cost,
                 price_before=price_before, price_after=market.price(),
-                bankroll_after=bankrolls[agent_id], ts=time.time(),
+                bankroll_after=bankrolls[agent_id], parse_failed=parse_failed,
+                prompt_version=prompt_version, ts=time.time(),
             ))
             if delay:
                 await asyncio.sleep(delay)
@@ -507,16 +729,54 @@ async def _decide(agent, view: TradeView) -> Trade:
 # ---------------------------------------------------------------------------
 
 
+def _read_cost_entries(config: RunConfig) -> list[CostEntry]:
+    """Read the condition's cost ledger into CostEntry rows (empty when no
+    ledger exists, e.g. the mock path). Tolerant of a truncated final line."""
+    path = costs_path_for(config)
+    if not path.exists():
+        return []
+    entries: list[CostEntry] = []
+    text = path.read_text()
+    if not text:
+        return []
+    ended_newline = text.endswith("\n")
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            entries.append(CostEntry.model_validate_json(line))
+        except Exception:
+            if idx == len(lines) - 1 and not ended_newline:
+                break
+            raise
+    return entries
+
+
 def status_report(config: RunConfig) -> str:
     """Human-readable turns done/remaining + parse-failure counts per
-    (condition, seed). Cost ledger arrives in P3 — a $0.00 placeholder is
-    printed for now. Read-only: never generates questions or writes anything.
+    (condition, seed), plus (for LLM runs) cumulative cost and per-model
+    parse-failure counts from the ledger. Read-only: never generates questions
+    or writes anything.
     """
     n_agents = len(config.agents)
     beliefs_per_seed = config.n_questions * n_agents
     trades_per_seed = config.n_questions * config.n_rounds * n_agents
     settlements_per_seed = config.n_questions
     planned = beliefs_per_seed + trades_per_seed + settlements_per_seed
+
+    # agent_id -> the model_id it runs on (or "mock").
+    agent_model = {
+        a.agent_id: (config.models[a.model].model_id if a.kind == "llm" else "mock")
+        for a in config.agents
+    }
+    cost_entries = _read_cost_entries(config)
+    cost_by_seed: dict[int, float] = {}
+    for e in cost_entries:
+        if e.key is not None:
+            cost_by_seed[e.key.seed] = cost_by_seed.get(e.key.seed, 0.0) + e.cost
+    # model_id -> parse-failure count, across all seeds.
+    fails_by_model: dict[str, int] = {}
 
     lines = [f"condition {config.condition}: {len(config.seeds)} seed(s)"]
     for seed in config.seeds:
@@ -525,16 +785,29 @@ def status_report(config: RunConfig) -> str:
         done_trades = sum(1 for e in events if e.type == "trade")
         done_settle = sum(1 for e in events if e.type == "settlement")
         done = done_beliefs + done_trades + done_settle
-        parse_fails = sum(
-            1 for e in events
-            if e.type in ("belief", "trade") and e.parse_failed
-        )
+        parse_fails = 0
+        for e in events:
+            if e.type in ("belief", "trade") and e.parse_failed:
+                parse_fails += 1
+                model_id = agent_model.get(e.key.agent_id, "mock")
+                fails_by_model[model_id] = fails_by_model.get(model_id, 0) + 1
+        seed_cost = cost_by_seed.get(seed, 0.0)
         lines.append(
             f"  seed {seed}: {done}/{planned} turns done "
             f"({planned - done} remaining) — "
             f"beliefs {done_beliefs}/{beliefs_per_seed}, "
             f"trades {done_trades}/{trades_per_seed}, "
             f"settlements {done_settle}/{settlements_per_seed}; "
-            f"parse-failures {parse_fails}; cost $0.00"
+            f"parse-failures {parse_fails}; cost ${seed_cost:.4f}"
         )
+
+    total_cost = sum(e.cost for e in cost_entries)
+    lines.append(
+        f"  total cost ${total_cost:.4f} (budget ${config.budget_usd:.2f})"
+    )
+    if fails_by_model:
+        breakdown = ", ".join(
+            f"{mid}: {n}" for mid, n in sorted(fails_by_model.items())
+        )
+        lines.append(f"  parse-failures by model — {breakdown}")
     return "\n".join(lines)
