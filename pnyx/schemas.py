@@ -63,6 +63,52 @@ class Trade(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Agent view models (see pnyx.agents for the Agent protocol / MockAgent)
+# --------------------------------------------------------------------------
+#
+# These are what the runner (Task 5) hands to an agent's elicit_belief() /
+# decide_trade() calls. They deliberately do NOT carry the oracle posterior
+# for the agent's shard subset — exposing it here would be cheating for a
+# real (P3) LLM agent that is only supposed to see its rendered shard text
+# and realized signal values. MockAgent instead receives its shard's oracle
+# posterior directly at construction (a QuestionRecord.posterior_table
+# lookup the runner performs), never via the view.
+
+
+class BeliefView(BaseModel):
+    """What an agent sees for Pass-1 independent belief elicitation.
+
+    ``signal_values`` maps the agent's own shard's signal indices to their
+    realized values (a subset of a QuestionRecord's signals — whichever
+    indices this agent was assigned). ``persona`` is unused by MockAgent;
+    it exists for P3 LLM agents.
+    """
+
+    question_id: str
+    signal_values: dict[int, int]
+    persona: str = ""
+
+
+class TradeView(BeliefView):
+    """What an agent sees for a Pass-2 market-round trade decision:
+    everything in ``BeliefView`` plus the live market/account state.
+
+    ``max_affordable_yes`` / ``max_affordable_no`` are computed by the
+    runner via ``market.py`` (``max_affordable_shares``) — agents never
+    import market.py themselves. The runner still clamps the agent's
+    requested ``Trade.shares`` server-side regardless of what the agent
+    asks for (Global Constraints).
+    """
+
+    price: float = Field(ge=0.0, le=1.0)
+    round: int = Field(ge=1)
+    n_rounds: int = Field(ge=1)
+    bankroll: float = Field(ge=0.0)
+    max_affordable_yes: float = Field(ge=0.0)
+    max_affordable_no: float = Field(ge=0.0)
+
+
+# --------------------------------------------------------------------------
 # Generative environment records
 # --------------------------------------------------------------------------
 
