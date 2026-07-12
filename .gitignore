@@ -1,0 +1,20 @@
+# Internal dev prompt — never public
+CLAUDE.md
+
+# Secrets
+.env
+
+# Experiment data (JSONL event logs)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
