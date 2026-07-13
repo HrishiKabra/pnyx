@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 # Bump on any template change (SPEC §9: iterate in P3, freeze after).
-PROMPT_VERSION = "p3-v2"
+PROMPT_VERSION = "p3-v3"
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +188,14 @@ def pass2_messages(
         "as yours. Trade to maximize your bankroll: buy YES if you think the "
         "true probability is above the price, buy NO if below, or hold. You may "
         "only spend up to your affordability limits.",
+        "IMPORTANT — price impact: this is an automated market maker, so your "
+        "own buying moves the price against you as you buy. Buying YES pushes "
+        "the price up; buying NO pushes it down. A sensible trade buys at most "
+        "enough shares to move the price to your believed probability — buying "
+        "beyond that point costs more per share than it can be worth and loses "
+        "money in expectation. Spending your whole bankroll in one trade is "
+        "almost always a mistake: size your position to your edge and your "
+        "confidence, and keep cash for later rounds in case the price moves.",
     ]
     persona_line = _persona_line(persona)
     if persona_line:
