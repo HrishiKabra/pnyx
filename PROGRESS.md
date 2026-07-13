@@ -7,7 +7,7 @@
 | P0 — Spec freeze | ✅ done (2026-07-13) | git init; SPEC.md (public §2 + §5 verbatim); .gitignore covers CLAUDE.md, .env, data/ |
 | P1 — Engine + env | ✅ done (2026-07-13) | market.py, env.py, schemas.py, MockAgent, oracle, runner.py + cli.py + configs/mock.yaml; 5-question mock end-to-end (0 API calls) + SIGKILL kill-resume acceptance test green; 114 tests pass under `-W error` |
 | P2 — Environment rendering | ✅ done (2026-07-13) | 40+10 questions rendered by 10 Sonnet 5 subagents, adversarially verified to 100% pass (2 fix rounds); datasets/questions_v1.jsonl + pilot frozen |
-| P3 — Pilot (~$1–2) | not started | 10 held-out questions, pool A, b-sweep, prompt freeze, matching table |
+| P3 — Pilot | ✅ done (2026-07-13) | b=40 + prompts p3-v3 frozen; 0% parse-fail; ~$0.09 spent; matching table partial (model C blocked on credits, model A pending Colab) |
 | P4 — Main runs | not started | full grid × 3 seeds |
 | P5 — Analysis | not started | Fig 1, Fig 2, Tables 1–2, stats |
 | P6 — Ship | not started | README, writeup, optional replay UI |
@@ -23,6 +23,9 @@
 - 2026-07-13: P1 closed after five task reviews + one whole-branch review (all approved). Post-review fixes applied: SettlementEvent.subsidy docstring reconciled with market.py's non-degenerate definition (worst-case payout − collected revenue; the naive C-delta-minus-revenue telescopes to 0); post-trade bankroll floored at 0 (full-clamp buys can leave ~−1e-13 float residue that would fail TradeView ge=0 validation).
 - 2026-07-13: **Question-set design for P2+:** the 40+10 question dataset is generated ONCE (P2) and stored as versioned JSONL; every condition/seed loads the same file. Runtime question generation (and its per-condition seeding) is a MOCK-config-only path. This guarantees paired comparisons across conditions and seeds by construction.
 - Deferred (from final review): parse-failure accounting + stronger no-network guard land with providers in P3; multi-seed/multi-condition runtime generation seeding left as-is since file-based datasets moot it.
+- 2026-07-13 (P3 freeze): **b = 40 frozen** (sweep: b20 degenerate 20-100% of questions, b80 sluggish/no advantage, b40 non-degenerate at 10%); **prompts frozen at p3-v3** (v1→v2: fixed stray literal quote in trade format + rationale char limit + no-fences instruction, parse-fail 5.4%→0%; v2→v3: LMSR price-impact sizing guidance — median trade dropped from ~100% to 18% of cash, market Brier 0.344→0.137 at b=40, now beating mean-pool 0.205). **reasoning_enabled=false frozen for deepseek-v4-flash** (reasoning-hybrid null-content failures + 3× output cost otherwise). Pilot total spend ≈ $0.09 across 9 runs incl. iterations.
+- 2026-07-13 (matching table, per-model standalone posterior gap on pilot questions): deepseek-v4-flash **0.268** (p3-v3, b40 run). Model C (qwen3-next-80b free) **BLOCKED**: OpenRouter lifetime credits $4.99 < $10 → free tier capped ~50 req/day; needs user top-up or paid swap. Model A (local vLLM) pending Colab setup (P4 prep). Condition-C quality matching completes when those columns land.
+- 2026-07-13 (pilot observation, NOT a confirmed finding): at b=40 the market's final-price Brier (0.137) beat the mean pool (0.205) while its posterior GAP (0.275) was slightly worse than the pool's (0.218) — the market commits harder to the realized side; H1 adjudication awaits the main runs (40 q × 3 seeds).
 
 ## Dependency additions beyond stdlib/pydantic/httpx/openai/numpy/pandas/matplotlib/vllm
 
@@ -75,3 +78,37 @@
 - single-shard non-sufficiency: enforced numerically at generation (min single-shard
   margin ≥ 0.1 vs posterior|all, checked against the oracle; margins stored in each
   record's meta and re-verified in tests).
+
+## P3 pilot
+
+```
+run                 condition      settled  degeneracy  market_gap  market_brier  pool_gap  pool_brier  total_cost  turns  
+------------------  -------------  -------  ----------  ----------  ------------  --------  ----------  ----------  -------
+data/pilot_b20_pv3  PILOT_B20_PV3  10/10    0.2000      0.4455      0.5084        0.2231    0.2083      $0.0097     250/250
+data/pilot_b40_pv3  PILOT_B40_PV3  10/10    0.1000      0.2752      0.1366        0.2175    0.2051      $0.0097     250/250
+data/pilot_b80_pv3  PILOT_B80_PV3  10/10    0.0000      0.2681      0.2024        0.2284    0.2409      $0.0098     250/250
+
+-- data/pilot_b20_pv3 --
+  parse-fail rate by model (post-retry):
+    deepseek/deepseek-v4-flash: 0.0000 (0/240)
+  standalone gap by model (mean |Pass-1 prob - posterior_all|):
+    deepseek/deepseek-v4-flash: 0.2717
+  cost by model:
+    deepseek/deepseek-v4-flash: $0.0097
+
+-- data/pilot_b40_pv3 --
+  parse-fail rate by model (post-retry):
+    deepseek/deepseek-v4-flash: 0.0000 (0/240)
+  standalone gap by model (mean |Pass-1 prob - posterior_all|):
+    deepseek/deepseek-v4-flash: 0.2678
+  cost by model:
+    deepseek/deepseek-v4-flash: $0.0097
+
+-- data/pilot_b80_pv3 --
+  parse-fail rate by model (post-retry):
+    deepseek/deepseek-v4-flash: 0.0000 (0/240)
+  standalone gap by model (mean |Pass-1 prob - posterior_all|):
+    deepseek/deepseek-v4-flash: 0.2786
+  cost by model:
+    deepseek/deepseek-v4-flash: $0.0098
+```
