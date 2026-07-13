@@ -177,6 +177,32 @@ def test_request_body_json_schema_shape(monkeypatch):
     assert usage == Usage(prompt_tokens=10, completion_tokens=20)
 
 
+def test_reasoning_param_sent_only_when_set(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
+    cap = {}
+
+    def handler(request):
+        cap["json"] = json.loads(request.content)
+        return _completion()
+
+    # Default (None): no reasoning key in the body.
+    provider = Provider(client=_client(handler))
+    _run(provider.complete(
+        messages=[{"role": "user", "content": "hi"}],
+        schema=Belief, model_spec=_spec(), temperature=0.7, max_tokens=256,
+    ))
+    assert "reasoning" not in cap["json"]
+
+    # Explicitly disabled: reasoning={"enabled": False} on the wire.
+    spec_off = _spec().model_copy(update={"reasoning_enabled": False})
+    provider = Provider(client=_client(handler))
+    _run(provider.complete(
+        messages=[{"role": "user", "content": "hi"}],
+        schema=Belief, model_spec=spec_off, temperature=0.7, max_tokens=256,
+    ))
+    assert cap["json"]["reasoning"] == {"enabled": False}
+
+
 def test_free_text_no_response_format(monkeypatch):
     monkeypatch.setenv("OPENROUTER_KEY", "sk-secret")
     cap = {}

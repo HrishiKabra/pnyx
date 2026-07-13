@@ -338,6 +338,8 @@ class Provider:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if model_spec.reasoning_enabled is not None:
+            body["reasoning"] = {"enabled": model_spec.reasoning_enabled}
         if schema is not None and model_spec.supports_json_schema:
             body["response_format"] = {
                 "type": "json_schema",

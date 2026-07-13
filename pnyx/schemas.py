@@ -359,6 +359,11 @@ class ModelSpec(BaseModel):
     price_out: float = Field(ge=0.0, description="$/M output (completion) tokens")
     rpm_limit: int = Field(gt=0, description="client-side requests-per-minute bucket")
     supports_json_schema: bool = True
+    # Reasoning-hybrid models (e.g. deepseek-v4-flash) emit a `reasoning`
+    # field and can return null content when reasoning overruns the token
+    # budget. None = omit the OpenRouter `reasoning` param (provider default);
+    # False/True = explicitly disable/enable.
+    reasoning_enabled: bool | None = None
 
     def cost(self, in_tokens: int, out_tokens: int) -> float:
         """Dollar cost of a call with the given token counts (prices are $/M)."""
