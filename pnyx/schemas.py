@@ -123,6 +123,15 @@ class AgentSpec(BaseModel):
     ``"llm"`` agent additionally names ``model`` (a key into
     ``RunConfig.models``) and an optional ``persona`` (a key into
     ``pnyx.prompts.PERSONAS``). Both are ignored on the mock path.
+
+    Adversary (P4, condition D): ``adversary=True`` selects the adversary
+    Pass-2 system prompt (``pnyx.prompts.pass2_adversary_messages``, prompt
+    version ``p3-v3-adv1``) instead of the honest trader prompt. An adversary
+    holds NO private shard (``shard_indices`` must be empty), is elicited NO
+    Pass-1 belief, and must be an ``"llm"`` agent with an ``adversary_style``
+    (``"stealthy"`` trades moderately and rationalizes; ``"obvious"`` trades
+    aggressively). Its k× bankroll is set through the ordinary ``bankroll``
+    field (100×k). ``adversary_style`` must be ``None`` for honest agents.
     """
 
     agent_id: str
@@ -131,6 +140,32 @@ class AgentSpec(BaseModel):
     kind: Literal["mock", "llm"] = "mock"
     model: str | None = None
     persona: str | None = None
+    adversary: bool = False
+    adversary_style: Literal["stealthy", "obvious"] | None = None
+
+    @model_validator(mode="after")
+    def _validate_adversary(self) -> "AgentSpec":
+        if self.adversary:
+            if self.adversary_style is None:
+                raise ValueError(
+                    f"agent {self.agent_id!r}: adversary=True requires an "
+                    "adversary_style ('stealthy' or 'obvious')"
+                )
+            if self.kind != "llm":
+                raise ValueError(
+                    f"agent {self.agent_id!r}: an adversary must be kind='llm'"
+                )
+            if self.shard_indices:
+                raise ValueError(
+                    f"agent {self.agent_id!r}: an adversary holds no private "
+                    f"shard — shard_indices must be empty, got {self.shard_indices}"
+                )
+        elif self.adversary_style is not None:
+            raise ValueError(
+                f"agent {self.agent_id!r}: adversary_style is only valid when "
+                "adversary=True"
+            )
+        return self
 
 
 # --------------------------------------------------------------------------
@@ -403,6 +438,19 @@ class RunConfig(BaseModel):
     # of generating them (requiring shards + question_text on each). The generate
     # path stays for the MOCK config. See ``runner._load_or_generate_questions``.
     questions_file: str | None = None
+    # Pass-1 reuse (P4, conditions W and D): when set, the runner does NOT
+    # elicit Pass 1 for this run. It loads phase="independent" beliefs from
+    # another condition's event log under this directory (matched seed-for-seed
+    # and by (question_id, agent_id)) and feeds them into Pass 2 as each honest
+    # agent's pass1_prob. Those source beliefs belong to the source condition
+    # and are NOT rewritten into this run's log. Setting this makes the run
+    # ``pass2_only`` (Pass 2 for honest agents + any adversary; no belief turns).
+    pass1_source_dir: str | None = None
+    # Order in which questions are processed within a seed. ``"file"`` keeps the
+    # dataset/sidecar order; ``"shuffled"`` applies a deterministic per-seed
+    # permutation (SeedSequence keyed on (seed, "question_order")), stable across
+    # resume by construction (derived from the seed, never runtime state).
+    question_order: Literal["file", "shuffled"] = "file"
     env: EnvConfig
     agents: list[AgentSpec] = Field(min_length=1)
     # P3 provider pool: maps a config-local model key (referenced by
@@ -414,6 +462,12 @@ class RunConfig(BaseModel):
     # Sampling controls for LLM agents (ignored on the mock path).
     temperature: float = Field(default=0.7, ge=0.0)
     max_tokens: int | None = Field(default=None, gt=0)
+
+    @property
+    def pass2_only(self) -> bool:
+        """True when Pass 1 is reused from another run rather than elicited —
+        derived solely from ``pass1_source_dir`` being set (no separate flag)."""
+        return self.pass1_source_dir is not None
 
     @model_validator(mode="after")
     def _validate_shards(self) -> "RunConfig":

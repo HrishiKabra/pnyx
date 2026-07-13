@@ -9,9 +9,11 @@ appears in a rendered prompt. Pure/offline — no network, no provider.
 import pnyx.prompts as prompts
 from pnyx.prompts import (
     ADVERSARY_PERSONA,
+    ADVERSARY_PROMPT_VERSION,
     PERSONAS,
     PROMPT_VERSION,
     pass1_messages,
+    pass2_adversary_messages,
     pass2_messages,
     render_evidence,
     retry_user_message,
@@ -118,6 +120,61 @@ def test_retry_message_includes_error_text():
     assert m["role"] == "user"
     assert "prob: field required" in m["content"]
     assert "JSON" in m["content"]
+
+
+# ---------------------------------------------------------------------------
+# Adversary Pass-2 prompt (condition D)
+# ---------------------------------------------------------------------------
+
+
+def _adv_msgs(style="stealthy", price=0.7):
+    return pass2_adversary_messages(
+        QUESTION, adversary_style=style,
+        price=price, round=2, n_rounds=3, bankroll=300.0,
+        max_affordable_yes=400.0, max_affordable_no=350.0,
+    )
+
+
+def test_adversary_prompt_version_distinct_and_tagged():
+    assert ADVERSARY_PROMPT_VERSION == "p3-v3-adv1"
+    assert ADVERSARY_PROMPT_VERSION != PROMPT_VERSION
+
+
+def test_adversary_prompt_instructs_distortion_and_market_state():
+    msgs = _adv_msgs()
+    assert [m["role"] for m in msgs] == ["system", "user"]
+    text = _text(msgs).lower()
+    # Objective is to distort / move away from the informed consensus.
+    assert "distort" in text
+    assert QUESTION in _text(msgs)
+    # Market state present (round + price), same JSON Trade contract.
+    assert "round 2 of 3" in _text(msgs)
+    assert "0.7000" in _text(msgs)
+    assert '"action"' in _text(msgs)
+
+
+def test_adversary_prompt_has_no_pass1_prior_or_honest_sizing_guidance():
+    # The adversary is elicited no Pass-1 belief, so its prompt must not carry a
+    # "prior analysis concluded" line, and it must NOT inherit the honest
+    # "size to your edge / don't overspend" guidance (that contradicts its goal).
+    text = _text(_adv_msgs())
+    assert "prior analysis concluded" not in text
+    assert "size your position to your edge" not in text
+    assert "loses money in expectation" not in text
+
+
+def test_adversary_styles_differ():
+    stealthy = _text(_adv_msgs(style="stealthy")).lower()
+    obvious = _text(_adv_msgs(style="obvious")).lower()
+    assert "stealthy" in stealthy and "blend in" in stealthy
+    assert "aggressive" in obvious
+
+
+def test_adversary_prompt_never_leaks_hidden_state():
+    for style in ("stealthy", "obvious"):
+        text = _text(_adv_msgs(style=style)).lower()
+        for banned in _FORBIDDEN:
+            assert banned not in text, f"adversary prompt leaked {banned!r}"
 
 
 # ---------------------------------------------------------------------------

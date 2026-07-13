@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from pnyx.schemas import (
+    AgentSpec,
     Belief,
     BeliefEvent,
     Event,
@@ -359,3 +360,42 @@ def test_event_type_alias_is_exported():
     # Event is a type alias (Annotated Union), not a class — just confirm
     # it's importable and usable as documented.
     assert Event is not None
+
+
+# --------------------------------------------------------------------------
+# AgentSpec adversary invariants (P4)
+# --------------------------------------------------------------------------
+
+
+def test_adversary_spec_valid():
+    a = AgentSpec(agent_id="adv0", shard_indices=[], kind="llm", model="m",
+                  adversary=True, adversary_style="stealthy", bankroll=300.0)
+    assert a.adversary and a.adversary_style == "stealthy"
+
+
+def test_honest_spec_defaults_not_adversary():
+    a = AgentSpec(agent_id="p0", shard_indices=[0])
+    assert a.adversary is False and a.adversary_style is None
+
+
+def test_adversary_requires_style():
+    with pytest.raises(ValidationError, match="adversary_style"):
+        AgentSpec(agent_id="adv0", shard_indices=[], kind="llm", model="m",
+                  adversary=True)
+
+
+def test_adversary_must_be_llm():
+    with pytest.raises(ValidationError, match="kind='llm'"):
+        AgentSpec(agent_id="adv0", shard_indices=[], kind="mock",
+                  adversary=True, adversary_style="obvious")
+
+
+def test_adversary_must_have_empty_shards():
+    with pytest.raises(ValidationError, match="empty"):
+        AgentSpec(agent_id="adv0", shard_indices=[0], kind="llm", model="m",
+                  adversary=True, adversary_style="stealthy")
+
+
+def test_adversary_style_without_adversary_flag_rejected():
+    with pytest.raises(ValidationError, match="only valid when adversary"):
+        AgentSpec(agent_id="p0", shard_indices=[0], adversary_style="stealthy")

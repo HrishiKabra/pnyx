@@ -20,7 +20,13 @@ from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
-from pnyx.prompts import PROMPT_VERSION, pass1_messages, pass2_messages, retry_user_message
+from pnyx.prompts import (
+    PROMPT_VERSION,
+    pass1_messages,
+    pass2_adversary_messages,
+    pass2_messages,
+    retry_user_message,
+)
 from pnyx.providers import ProviderError, SchemaParseError
 from pnyx.schemas import (
     AgentSpec,
@@ -283,18 +289,31 @@ class LLMAgent:
     async def decide_trade(
         self, view: TradeView, *, pass1_prob: float, bill: BillFn
     ) -> TradeResult:
-        messages = pass2_messages(
-            view.question_text,
-            view.shard_texts,
-            self.persona,
-            price=view.price,
-            round=view.round,
-            n_rounds=view.n_rounds,
-            bankroll=view.bankroll,
-            max_affordable_yes=view.max_affordable_yes,
-            max_affordable_no=view.max_affordable_no,
-            pass1_prob=pass1_prob,
-        )
+        if self.spec.adversary:
+            # Adversary: own system block, no evidence, no Pass-1 prior.
+            messages = pass2_adversary_messages(
+                view.question_text,
+                adversary_style=self.spec.adversary_style,
+                price=view.price,
+                round=view.round,
+                n_rounds=view.n_rounds,
+                bankroll=view.bankroll,
+                max_affordable_yes=view.max_affordable_yes,
+                max_affordable_no=view.max_affordable_no,
+            )
+        else:
+            messages = pass2_messages(
+                view.question_text,
+                view.shard_texts,
+                self.persona,
+                price=view.price,
+                round=view.round,
+                n_rounds=view.n_rounds,
+                bankroll=view.bankroll,
+                max_affordable_yes=view.max_affordable_yes,
+                max_affordable_no=view.max_affordable_no,
+                pass1_prob=pass1_prob,
+            )
         obj, parse_failed = await self._complete_with_retry(messages, Trade, bill)
         if parse_failed:
             return TradeResult(

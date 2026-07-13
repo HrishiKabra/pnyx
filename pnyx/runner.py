@@ -72,7 +72,7 @@ import yaml
 from pnyx.agents import LLMAgent, MockAgent
 from pnyx.env import generate_question, subset_key
 from pnyx.market import Market, max_affordable_shares
-from pnyx.prompts import PROMPT_VERSION
+from pnyx.prompts import ADVERSARY_PROMPT_VERSION, PROMPT_VERSION
 from pnyx.providers import (
     CostLedger,
     Provider,
@@ -430,6 +430,14 @@ def _build_llm_agents(
 
 async def _run_seed(config: RunConfig, seed: int, resources: _RunResources) -> None:
     questions = _load_or_generate_questions(config, seed)
+    if config.question_order == "shuffled":
+        questions = _order_questions(seed, questions)
+    # Pass-1 reuse (W/D): load honest beliefs from the source condition's log for
+    # THIS seed and assert full coverage up front (fail loudly on any gap).
+    source_beliefs: dict[tuple[str, str], float] | None = None
+    if config.pass2_only:
+        source_beliefs = _load_source_beliefs(config, seed)
+        _assert_source_covers(config, questions, source_beliefs)
     log = log_path_for(config, seed)
     log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -452,6 +460,7 @@ async def _run_seed(config: RunConfig, seed: int, resources: _RunResources) -> N
             await _run_question(
                 config, seed, q, agents_by_id, llm_agents, resources,
                 events_by_key, settled, settlements_by_q, wealth, f,
+                source_beliefs,
             )
 
 
@@ -488,7 +497,7 @@ def _budget_gate(config: RunConfig, resources: _RunResources) -> None:
 
 async def _run_question(
     config, seed, q, agents_by_id, llm_agents, resources, events_by_key,
-    settled, settlements_by_q, wealth, f,
+    settled, settlements_by_q, wealth, f, source_beliefs=None,
 ) -> None:
     qid = q.question_id
     condition = config.condition
@@ -503,8 +512,24 @@ async def _run_question(
     # Each agent's own Pass-1 probability, carried into its Pass-2 prompt.
     pass1_probs: dict[str, float] = {}
 
+    if config.pass2_only:
+        # Pass 1 is reused from the source condition, not elicited here. Adversary
+        # agents have no Pass-1 belief and use no pass1_prob. Coverage was already
+        # asserted in _run_seed, so a direct lookup is safe.
+        for spec in config.agents:
+            if spec.adversary:
+                continue
+            pass1_probs[spec.agent_id] = source_beliefs[(qid, spec.agent_id)]
+        await _run_market(
+            config, seed, q, agents_by_id, llm_agents, resources, events_by_key,
+            settled, settlements_by_q, wealth, f, pass1_probs, oracle, delay,
+        )
+        return
+
     # ---- Pass 1: independent beliefs -------------------------------------
     for spec in config.agents:
+        if spec.adversary:
+            continue  # adversary is never elicited a Pass-1 belief
         key = TurnKey(
             condition=condition, seed=seed, question_id=qid,
             phase="independent", round=0, agent_id=spec.agent_id,
@@ -550,6 +575,22 @@ async def _run_question(
         ))
         if delay:
             await asyncio.sleep(delay)
+
+    await _run_market(
+        config, seed, q, agents_by_id, llm_agents, resources, events_by_key,
+        settled, settlements_by_q, wealth, f, pass1_probs, oracle, delay,
+    )
+
+
+async def _run_market(
+    config, seed, q, agents_by_id, llm_agents, resources, events_by_key,
+    settled, settlements_by_q, wealth, f, pass1_probs, oracle, delay,
+) -> None:
+    """Pass 2 (market rounds) + settlement for one question. Shared by the
+    normal two-pass path and the Pass-1-reuse (pass2_only) path — both arrive
+    here with ``pass1_probs`` already populated (elicited or loaded)."""
+    qid = q.question_id
+    condition = config.condition
 
     # ---- Pass 2: market (walk the deterministic plan; replay or execute) --
     market = Market(b=config.b)
@@ -609,7 +650,9 @@ async def _run_question(
                     return
                 trade = result.trade
                 parse_failed = result.parse_failed
-                prompt_version = PROMPT_VERSION
+                prompt_version = (
+                    ADVERSARY_PROMPT_VERSION if spec.adversary else PROMPT_VERSION
+                )
             else:
                 agent = MockAgent(oracle[agent_id], _rng(seed, "trade", qid, rnd, agent_id))
                 trade = await _decide(agent, view)
@@ -665,6 +708,75 @@ def _shuffle_order(seed, qid, rnd, agent_ids: list[str]) -> list[str]:
     rng = _rng(seed, "shuffle", qid, rnd)
     perm = rng.permutation(len(agent_ids))
     return [agent_ids[i] for i in perm]
+
+
+def _order_questions(seed: int, questions: list[QuestionRecord]) -> list[QuestionRecord]:
+    """Deterministic per-seed question processing order (question_order=shuffled).
+
+    The permutation is keyed on (seed, "question_order") only — never on runtime
+    state — so a resumed run reproduces the identical order regardless of where a
+    prior process was killed (order stability across resume by construction)."""
+    rng = _rng(seed, "question_order")
+    perm = rng.permutation(len(questions))
+    return [questions[i] for i in perm]
+
+
+def _source_log_path(config: RunConfig, seed: int) -> Path:
+    """The source condition's event log for this seed under ``pass1_source_dir``
+    (matched seed-for-seed). The source condition name is embedded in the log
+    filename, so we glob for the single ``*_seed<seed>.jsonl`` there."""
+    src = Path(config.pass1_source_dir)
+    matches = [
+        p for p in src.glob(f"*_seed{seed}.jsonl")
+        if ".questions." not in p.name and ".costs." not in p.name
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"pass1_source_dir {src} has no event log for seed {seed} "
+            f"(expected a *_seed{seed}.jsonl file to reuse Pass-1 beliefs from)"
+        )
+    if len(matches) > 1:
+        raise ValueError(
+            f"pass1_source_dir {src} has multiple event logs for seed {seed}: "
+            f"{sorted(p.name for p in matches)} — ambiguous source"
+        )
+    return matches[0]
+
+
+def _load_source_beliefs(config: RunConfig, seed: int) -> dict[tuple[str, str], float]:
+    """Load phase='independent' beliefs from the source condition's log for this
+    seed into a ``{(question_id, agent_id): prob}`` map (Pass-1 reuse, W/D). The
+    source beliefs are read-only here — never rewritten into this run's log."""
+    path = _source_log_path(config, seed)
+    beliefs: dict[tuple[str, str], float] = {}
+    for e in read_events(path):
+        if e.type == "belief" and e.key.phase == "independent":
+            beliefs[(e.key.question_id, e.key.agent_id)] = e.belief.prob
+    return beliefs
+
+
+def _assert_source_covers(
+    config: RunConfig,
+    questions: list[QuestionRecord],
+    source_beliefs: dict[tuple[str, str], float],
+) -> None:
+    """Fail loudly if the reused source is missing a Pass-1 belief for any
+    (question, honest agent). Adversaries need no source belief."""
+    honest = [a.agent_id for a in config.agents if not a.adversary]
+    missing = [
+        (q.question_id, aid)
+        for q in questions
+        for aid in honest
+        if (q.question_id, aid) not in source_beliefs
+    ]
+    if missing:
+        preview = ", ".join(f"{qid}/{aid}" for qid, aid in missing[:10])
+        raise ValueError(
+            f"pass1_source_dir {config.pass1_source_dir} is missing "
+            f"phase='independent' beliefs for {len(missing)} (question, agent) "
+            f"pairs required by condition {config.condition!r}: {preview}"
+            + (" ..." if len(missing) > 10 else "")
+        )
 
 
 def _replay_trade(market: Market, holdings, logged: TradeEvent, price_before: float) -> None:
@@ -760,7 +872,14 @@ def status_report(config: RunConfig) -> str:
     or writes anything.
     """
     n_agents = len(config.agents)
-    beliefs_per_seed = config.n_questions * n_agents
+    # Belief turns are elicited only for honest agents on the full two-pass path;
+    # a pass2_only run reuses Pass 1 (nothing logged) and adversaries never emit
+    # a belief. Every agent (honest + adversary) trades every round, though.
+    n_belief_agents = (
+        0 if config.pass2_only
+        else sum(1 for a in config.agents if not a.adversary)
+    )
+    beliefs_per_seed = config.n_questions * n_belief_agents
     trades_per_seed = config.n_questions * config.n_rounds * n_agents
     settlements_per_seed = config.n_questions
     planned = beliefs_per_seed + trades_per_seed + settlements_per_seed

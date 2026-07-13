@@ -1,0 +1,51 @@
+# Pnyx P4 main run — condition B1: 6× local vLLM (Llama-3.1-8B-Instruct on
+# Colab), full two-pass.
+#
+# The local model is served from a Colab notebook (see colab/pnyx_vllm_server
+# .ipynb) behind a cloudflared tunnel. BEFORE RUNNING: replace the placeholder
+# base_url below with the tunnel URL the notebook prints, e.g.
+# https://<something>.trycloudflare.com/v1  (keep the /v1 suffix). The bearer
+# key is read from $PNYX_LOCAL_KEY at call time (never stored/logged). vLLM's
+# guided-json decoding provides structured output (supports_json_schema: true);
+# price is 0/0 (self-hosted); rpm_limit 120 is generous for a local endpoint.
+
+condition: B1
+seeds: [0, 1, 2]
+n_questions: 40
+b: 40.0
+n_rounds: 3
+wealth_persistent: false
+data_dir: data/main/B1
+questions_file: datasets/questions_v1.jsonl
+question_order: file
+
+budget_usd: 5.0
+temperature: 0.7
+max_tokens: 2000
+
+env:
+  n_signals: 6
+  accuracies: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+  lams: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  a_z: 0.8
+  difficulty: easy
+  min_single_shard_margin: 0.1
+  max_rejection_tries: 2000
+
+models:
+  local:
+    base_url: REPLACE_WITH_COLAB_URL  # <-- paste the cloudflared tunnel URL (…/v1)
+    api_key_env: PNYX_LOCAL_KEY
+    model_id: meta-llama/Llama-3.1-8B-Instruct
+    price_in: 0.0
+    price_out: 0.0
+    rpm_limit: 120
+    supports_json_schema: true
+
+agents:
+  - {agent_id: p0, shard_indices: [0], bankroll: 100.0, kind: llm, model: local, persona: base_rate_skeptic}
+  - {agent_id: p1, shard_indices: [1], bankroll: 100.0, kind: llm, model: local, persona: evidence_maximalist}
+  - {agent_id: p2, shard_indices: [2], bankroll: 100.0, kind: llm, model: local, persona: contrarian}
+  - {agent_id: p3, shard_indices: [3], bankroll: 100.0, kind: llm, model: local, persona: domain_specialist}
+  - {agent_id: p4, shard_indices: [4], bankroll: 100.0, kind: llm, model: local, persona: kelly_sizer}
+  - {agent_id: p5, shard_indices: [5], bankroll: 100.0, kind: llm, model: local, persona: momentum_reader}
