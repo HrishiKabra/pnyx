@@ -141,10 +141,13 @@ def _assert_pass1(e: BeliefEvent) -> None:
     """Guard: ``e`` must be a Pass-1 (``phase == "independent"``) belief.
     Raises loudly on contamination rather than silently skewing a baseline
     (see module docstring)."""
-    assert e.key.phase == "independent", (
-        "phase guard violated: belief event has phase="
-        f"{e.key.phase!r} (expected 'independent') at key={e.key.as_tuple()}"
-    )
+    # ValueError, not `assert`: this scientific-integrity invariant must
+    # survive `python -O` (asserts are stripped from optimized bytecode).
+    if e.key.phase != "independent":
+        raise ValueError(
+            "phase guard violated: belief event has phase="
+            f"{e.key.phase!r} (expected 'independent') at key={e.key.as_tuple()}"
+        )
 
 
 def _pass1_beliefs(events: list) -> list[BeliefEvent]:
@@ -162,7 +165,8 @@ def _mean_pool_prob(belief_events: list[BeliefEvent]) -> float:
     """Simple mean of a set of Pass-1 belief probabilities (the mean-pool
     baseline). Re-asserts the phase guard itself so this function is safe to
     call directly (not only via ``_pass1_beliefs``)."""
-    assert belief_events, "no belief events to pool"
+    if not belief_events:
+        raise ValueError("no belief events to pool")
     for e in belief_events:
         _assert_pass1(e)
     return sum(e.belief.prob for e in belief_events) / len(belief_events)

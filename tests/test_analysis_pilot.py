@@ -279,7 +279,7 @@ def test_degeneracy_boundary_exact_not_degenerate(tmp_path):
 
 def test_phase_guard_direct_unit_raises_on_market_phase():
     contaminated = _belief("q000", "a0", 0.5, phase="market", round_=1)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         pilot._mean_pool_prob([contaminated])
 
 
@@ -298,7 +298,7 @@ def test_phase_guard_fires_end_to_end_on_contaminated_log(tmp_path):
     ]
     _write_run(run_dir, events=events, questions=[q], costs=[])
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         pilot.analyze_run(run_dir)
 
 
