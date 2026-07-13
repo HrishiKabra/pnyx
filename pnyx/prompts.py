@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 # Bump on any template change (SPEC §9: iterate in P3, freeze after).
-PROMPT_VERSION = "p3-v1"
+PROMPT_VERSION = "p3-v2"
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +86,8 @@ ADVERSARY_PERSONA: str = (
 
 _BELIEF_FORMAT = (
     "Respond with ONLY a single JSON object of the form "
-    '{"prob": <number between 0 and 1>, "rationale": <short string>} '
-    "and nothing else."
+    '{"prob": <number between 0 and 1>, "rationale": <string, under 300 characters>} '
+    "and nothing else. No code fences, no commentary before or after the JSON."
 )
 
 _TRADE_FORMAT = (
@@ -95,7 +95,8 @@ _TRADE_FORMAT = (
     '{"belief": <number between 0 and 1>, '
     '"action": "buy_yes" | "buy_no" | "hold", '
     '"shares": <number of shares to buy, 0 if holding>, '
-    '"rationale": <short string>} and nothing else."'
+    '"rationale": <string, under 300 characters>} '
+    "and nothing else. No code fences, no commentary before or after the JSON."
 )
 
 

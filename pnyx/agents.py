@@ -14,6 +14,7 @@ requested share count is clamped server-side regardless of what the agent
 asks for (Global Constraints — "never trust the agent's number").
 """
 
+import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
@@ -260,6 +261,13 @@ class LLMAgent:
             raise
         except SchemaParseError as second:
             bill(second.usage)
+            # Pilot observability: parse-failure modes are needed for prompt
+            # iteration but raw content never enters the event log.
+            print(
+                f"[parse-fail] {self.model_spec.model_id}: {str(second.error)[:160]} "
+                f"| content: {(second.content or '')[:200]!r}",
+                file=sys.stderr,
+            )
             return None, True
 
     async def elicit_belief(self, view: BeliefView, *, bill: BillFn) -> BeliefResult:
