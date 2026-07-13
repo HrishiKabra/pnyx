@@ -10,6 +10,9 @@ Invoked as a module (no console-script install needed):
     python -m pnyx.cli merge-render    --staging datasets/staging/
     python -m pnyx.cli verify-report   --staging datasets/staging/ [--assemble]
 
+    # P3 pilot analysis (offline, no network — reads logs a run already wrote):
+    python -m pnyx.cli analyze-pilot --runs data/pilot_b20 data/pilot_b40 [--progress]
+
 ``run`` executes or resumes the experiment (resume is the default — there is no
 resume flag; rerunning the same command after any crash continues from the last
 completed turn). ``status`` prints turns done/remaining per condition and
@@ -25,6 +28,12 @@ compose as CI-style gates.
 ``--data-dir`` overrides the config's ``data_dir`` (used by the kill-resume
 test to point a run at a temp directory without editing the YAML).
 
+``analyze-pilot`` aggregates one or more pilot run directories (already
+produced by ``run`` — this subcommand makes no LLM calls itself) into
+parse-fail / price-degeneracy / posterior-gap / Brier / cost stats; see
+``pnyx.analysis.pilot``. ``--progress`` writes/replaces a "## P3 pilot"
+section in PROGRESS.md.
+
 Entry mechanism: ``python -m pnyx.cli`` runs this file as ``__main__`` via the
 ``main()`` guard below. No ``__main__.py`` and no ``[project.scripts]`` console
 script are defined — module invocation keeps the package import-only and avoids
@@ -33,8 +42,10 @@ an install step for tests.
 
 import argparse
 import sys
+from pathlib import Path
 
 from pnyx import dataset
+from pnyx.analysis import pilot as pilot_analysis
 from pnyx.runner import load_config, run_experiment, status_report
 
 
@@ -71,6 +82,17 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="output dir for the assembled dataset files")
     verify_p.add_argument("--progress", default="PROGRESS.md",
                           help="PROGRESS.md path to append the summary to on --assemble")
+
+    analyze_p = sub.add_parser(
+        "analyze-pilot",
+        help="aggregate pilot run(s) into parse-fail/degeneracy/gap/Brier/cost stats",
+    )
+    analyze_p.add_argument("--runs", required=True, nargs="+",
+                           help="one or more pilot run data directories, e.g. data/pilot_b20 data/pilot_b40")
+    analyze_p.add_argument("--progress", action="store_true",
+                           help="write/replace the '## P3 pilot' section in PROGRESS.md")
+    analyze_p.add_argument("--progress-path", default="PROGRESS.md",
+                           help="PROGRESS.md path (only used with --progress)")
 
     return parser
 
@@ -122,12 +144,21 @@ def _cmd_verify_report(args) -> int:
     return 0 if stats.all_pass else 1
 
 
+def _cmd_analyze_pilot(args) -> int:
+    analyses = [pilot_analysis.analyze_run(Path(run_dir)) for run_dir in args.runs]
+    print(pilot_analysis.format_report(analyses))
+    if args.progress:
+        pilot_analysis.write_progress(Path(args.progress_path), analyses)
+    return 0
+
+
 _DISPATCH = {
     "run": _cmd_run,
     "status": _cmd_status,
     "build-questions": _cmd_build_questions,
     "merge-render": _cmd_merge_render,
     "verify-report": _cmd_verify_report,
+    "analyze-pilot": _cmd_analyze_pilot,
 }
 
 

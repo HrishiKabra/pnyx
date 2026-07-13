@@ -58,6 +58,7 @@ __all__ = [
     "build_questions",
     "merge_render",
     "verify_report",
+    "replace_progress_section",
     "BuildStats",
     "MergeStats",
     "VerifyStats",
@@ -495,9 +496,27 @@ def summary_table(stats: VerifyStats) -> str:
     return "\n".join(lines)
 
 
-def _write_progress(progress_path: Path, stats: VerifyStats) -> None:
-    """Append (or replace) the "## P2 dataset" section in PROGRESS.md."""
-    section = summary_table(stats) + "\n"
+def replace_progress_section(progress_path: Path, heading: str, section: str) -> None:
+    """Idempotent replace-or-append of one ``## <heading>`` ... section in a
+    PROGRESS.md-style file.
+
+    ``section`` must start with the heading line itself (e.g. the first line
+    of ``summary_table(stats)``); a trailing newline is added if missing.
+    Behavior:
+
+    * File doesn't exist -> written fresh with just this section.
+    * Heading not found -> appended at EOF (with a blank-line separator).
+    * Heading found -> everything from the heading line up to (but not
+      including) the next top-level (``"# "`` / ``"## "``) heading, or EOF,
+      is replaced with ``section`` — so re-running against the same file is
+      idempotent (one heading, latest content) rather than duplicating.
+
+    Shared by every pipeline stage that appends a summary section to
+    PROGRESS.md (P2 dataset assembly, P3 pilot analysis, ...) so the
+    replace-not-duplicate contract lives in exactly one place.
+    """
+    if not section.endswith("\n"):
+        section = section + "\n"
     if not progress_path.exists():
         progress_path.write_text(section)
         return
@@ -505,7 +524,7 @@ def _write_progress(progress_path: Path, stats: VerifyStats) -> None:
     lines = text.splitlines(keepends=True)
     start = None
     for i, line in enumerate(lines):
-        if line.strip() == _PROGRESS_HEADING:
+        if line.strip() == heading:
             start = i
             break
     if start is None:
@@ -521,3 +540,8 @@ def _write_progress(progress_path: Path, stats: VerifyStats) -> None:
             break
     new_lines = lines[:start] + [section] + lines[end:]
     progress_path.write_text("".join(new_lines))
+
+
+def _write_progress(progress_path: Path, stats: VerifyStats) -> None:
+    """Append (or replace) the "## P2 dataset" section in PROGRESS.md."""
+    replace_progress_section(progress_path, _PROGRESS_HEADING, summary_table(stats) + "\n")

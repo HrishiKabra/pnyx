@@ -1,0 +1,74 @@
+# Pnyx P3 pilot — homogeneous free-pool arm (model C), b=40. Real LLM calls
+# (controller-executed only; this file is data, it makes no calls itself).
+#
+# Same shape as pilot_b40.yaml but all six agents run on the free OpenRouter
+# model instead of the paid workhorse: gives model-C standalone gaps + parse
+# rates for the matching table. 18 rpm / ~50 req/day free-tier cap makes this
+# arm noticeably slower than the paid b-sweep — the runner's client-side
+# token bucket throttles to this rate automatically. Triggers the startup
+# free-tier credit check (loud non-blocking warning below $10 lifetime
+# credit).
+#
+# Budget: belt-and-suspenders cap at $2, though the free model itself costs
+# $0 — the cap only matters if this config is later pointed at a paid model
+# key. The runner refuses NEW LLM calls once cumulative ledger cost reaches
+# budget_usd unless `--override-budget`. The API key is read from
+# $OPENROUTER_KEY at call time (never stored/logged).
+
+condition: PILOT_FREE_B40
+seeds: [0]
+n_questions: 10
+b: 40.0
+n_rounds: 3
+wealth_persistent: false
+data_dir: data/pilot_free_b40
+questions_file: datasets/questions_pilot_v1.jsonl
+
+budget_usd: 2.0
+temperature: 0.7
+max_tokens: 512
+
+env:
+  n_signals: 6
+  accuracies: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+  lams: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  a_z: 0.8
+  difficulty: easy
+  min_single_shard_margin: 0.1
+  max_rejection_tries: 2000
+
+models:
+  # Model C (free) — locked decision record (Global Constraints). 18 rpm,
+  # ~50 req/day free-tier cap; triggers the startup credit check.
+  qwen3-next-80b-free:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_KEY
+    model_id: qwen/qwen3-next-80b-a3b-instruct:free
+    price_in: 0.0
+    price_out: 0.0
+    rpm_limit: 18
+    supports_json_schema: true
+  # Fallback free rotation if qwen3-next-80b-free is unavailable/rate-capped
+  # (provenance only — not selected by this arm):
+  # nemotron-free:  {model_id: nvidia/nemotron-3-super-120b-a12b:free, rpm_limit: 18}
+  # gemma-free:     {model_id: google/gemma-4-31b-it:free, rpm_limit: 18}
+  # hy3-free:       {model_id: tencent/hy3:free, rpm_limit: 18}
+  # Paid upgrade path (see pilot_b*.yaml) once the free arm's pilot numbers
+  # are in: deepseek/deepseek-chat-v3.1.
+  # Model A (local vLLM on Colab) — NOT part of P3 execution; kept for provenance.
+  # local:
+  #   base_url: http://localhost:8000/v1
+  #   api_key_env: VLLM_KEY
+  #   model_id: meta-llama/Llama-3.1-8B-Instruct
+  #   price_in: 0.0
+  #   price_out: 0.0
+  #   rpm_limit: 60
+  #   supports_json_schema: true
+
+agents:
+  - {agent_id: p0, shard_indices: [0], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: base_rate_skeptic}
+  - {agent_id: p1, shard_indices: [1], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: evidence_maximalist}
+  - {agent_id: p2, shard_indices: [2], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: contrarian}
+  - {agent_id: p3, shard_indices: [3], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: domain_specialist}
+  - {agent_id: p4, shard_indices: [4], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: kelly_sizer}
+  - {agent_id: p5, shard_indices: [5], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: momentum_reader}
