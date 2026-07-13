@@ -75,11 +75,11 @@ def test_free_pool_config_loads_and_validates():
     assert config.questions_file == "datasets/questions_pilot_v1.jsonl"
     assert config.budget_usd == pytest.approx(2.0)
 
-    assert set(config.models.keys()) == {"qwen3-next-80b-free"}
-    spec = config.models["qwen3-next-80b-free"]
+    assert set(config.models.keys()) == {"nemotron-120b-free"}
+    spec = config.models["nemotron-120b-free"]
     assert spec.base_url == "https://openrouter.ai/api/v1"
     assert spec.api_key_env == "OPENROUTER_KEY"
-    assert spec.model_id == "qwen/qwen3-next-80b-a3b-instruct:free"
+    assert spec.model_id == "nvidia/nemotron-3-super-120b-a12b:free"
     assert spec.price_in == pytest.approx(0.0)
     assert spec.price_out == pytest.approx(0.0)
     assert spec.rpm_limit == 18
@@ -88,7 +88,7 @@ def test_free_pool_config_loads_and_validates():
     assert [a.agent_id for a in config.agents] == [f"p{i}" for i in range(6)]
     for a in config.agents:
         assert a.kind == "llm"
-        assert a.model == "qwen3-next-80b-free"
+        assert a.model == "nemotron-120b-free"
     personas = [a.persona for a in config.agents]
     assert set(personas) == set(PERSONAS.keys())
     assert len(personas) == 6

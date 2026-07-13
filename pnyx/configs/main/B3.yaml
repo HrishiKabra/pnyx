@@ -1,12 +1,8 @@
-# Pnyx P4 main run — condition B3: 6× qwen3-next-80b (free), full two-pass.
-#
-# Homogeneous free-pool arm. 18 rpm / daily-cap free tier (account is paid-tier
-# so the daily cap is ~1000); the runner's client-side token bucket throttles
-# automatically and triggers the startup free-tier credit check. Controller-
-# executed; this file makes no calls itself.
-
 condition: B3
-seeds: [0, 1, 2]
+seeds:
+- 0
+- 1
+- 2
 n_questions: 40
 b: 40.0
 n_rounds: 3
@@ -14,34 +10,79 @@ wealth_persistent: false
 data_dir: data/main/B3
 questions_file: datasets/questions_v1.jsonl
 question_order: file
-
 budget_usd: 5.0
 temperature: 0.7
 max_tokens: 2000
-
 env:
   n_signals: 6
-  accuracies: [0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
-  lams: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  accuracies:
+  - 0.75
+  - 0.75
+  - 0.75
+  - 0.75
+  - 0.75
+  - 0.75
+  lams:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
   a_z: 0.8
   difficulty: easy
   min_single_shard_margin: 0.1
   max_rejection_tries: 2000
-
 models:
-  qwen3-next-80b-free:
+  nemotron-120b-free:
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_KEY
-    model_id: qwen/qwen3-next-80b-a3b-instruct:free
+    model_id: nvidia/nemotron-3-super-120b-a12b:free
     price_in: 0.0
     price_out: 0.0
     rpm_limit: 18
     supports_json_schema: true
-
+    reasoning_enabled: false
 agents:
-  - {agent_id: p0, shard_indices: [0], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: base_rate_skeptic}
-  - {agent_id: p1, shard_indices: [1], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: evidence_maximalist}
-  - {agent_id: p2, shard_indices: [2], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: contrarian}
-  - {agent_id: p3, shard_indices: [3], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: domain_specialist}
-  - {agent_id: p4, shard_indices: [4], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: kelly_sizer}
-  - {agent_id: p5, shard_indices: [5], bankroll: 100.0, kind: llm, model: qwen3-next-80b-free, persona: momentum_reader}
+- agent_id: p0
+  shard_indices:
+  - 0
+  bankroll: 100.0
+  kind: llm
+  model: nemotron-120b-free
+  persona: base_rate_skeptic
+- agent_id: p1
+  shard_indices:
+  - 1
+  bankroll: 100.0
+  kind: llm
+  model: nemotron-120b-free
+  persona: evidence_maximalist
+- agent_id: p2
+  shard_indices:
+  - 2
+  bankroll: 100.0
+  kind: llm
+  model: nemotron-120b-free
+  persona: contrarian
+- agent_id: p3
+  shard_indices:
+  - 3
+  bankroll: 100.0
+  kind: llm
+  model: nemotron-120b-free
+  persona: domain_specialist
+- agent_id: p4
+  shard_indices:
+  - 4
+  bankroll: 100.0
+  kind: llm
+  model: nemotron-120b-free
+  persona: kelly_sizer
+- agent_id: p5
+  shard_indices:
+  - 5
+  bankroll: 100.0
+  kind: llm
+  model: nemotron-120b-free
+  persona: momentum_reader
