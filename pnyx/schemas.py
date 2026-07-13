@@ -112,6 +112,10 @@ class TradeView(BeliefView):
     bankroll: float = Field(ge=0.0)
     max_affordable_yes: float = Field(ge=0.0)
     max_affordable_no: float = Field(ge=0.0)
+    # Condition-D adversary only: the ground-truth-WRONG side the adversary is
+    # tasked to push the price toward ("YES"/"NO"). Set by the runner solely for
+    # adversary agents; ``None`` for every honest agent (whose path is unchanged).
+    adversary_target_side: str | None = None
 
 
 class AgentSpec(BaseModel):
@@ -126,7 +130,7 @@ class AgentSpec(BaseModel):
 
     Adversary (P4, condition D): ``adversary=True`` selects the adversary
     Pass-2 system prompt (``pnyx.prompts.pass2_adversary_messages``, prompt
-    version ``p3-v3-adv1``) instead of the honest trader prompt. An adversary
+    version ``p3-v3-adv2``) instead of the honest trader prompt. An adversary
     holds NO private shard (``shard_indices`` must be empty), is elicited NO
     Pass-1 belief, and must be an ``"llm"`` agent with an ``adversary_style``
     (``"stealthy"`` trades moderately and rationalizes; ``"obvious"`` trades

@@ -645,45 +645,66 @@ def test_api_key_never_printed_on_4xx(monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_credit_check_returns_remaining():
+def _route(*, credits=None, key=None):
+    """Build a MockTransport handler routing ``/credits`` and ``/key`` to the
+    given httpx.Response factories (each a callable(request) -> Response, or a
+    Response). A missing route returns 404."""
     def handler(request):
+        path = request.url.path
+        target = credits if path.endswith("/credits") else key if path.endswith("/key") else None
+        if target is None:
+            return httpx.Response(404, json={"error": "no route"})
+        return target(request) if callable(target) else target
+    return handler
+
+
+def test_credit_check_prefers_lifetime_from_credits_endpoint():
+    def credits(request):
         assert request.method == "GET"
-        assert str(request.url) == "https://openrouter.ai/api/v1/key"
-        return httpx.Response(200, json={"data": {"limit": 5.0, "usage": 1.0}})
+        assert request.url.path.endswith("/credits")
+        return httpx.Response(200, json={"data": {"total_credits": 5.0, "total_usage": 1.0}})
 
-    credits = _run(check_openrouter_credits(_client(handler), "sk-x"))
-    assert credits == pytest.approx(4.0)
+    status = _run(check_openrouter_credits(_client(_route(credits=credits)), "sk-x"))
+    assert status.credits == pytest.approx(4.0)
+    assert status.is_lifetime is True
 
 
-def test_credit_check_unlimited_returns_none():
-    def handler(request):
-        return httpx.Response(200, json={"data": {"limit": None, "usage": 3.0}})
+def test_credit_check_falls_back_to_key_headroom_flagged_not_lifetime():
+    # No /credits endpoint (404) -> fall back to the key's limit-usage headroom,
+    # flagged is_lifetime=False so the warning stays honest about what it knows.
+    key = httpx.Response(200, json={"data": {"limit": 5.0, "usage": 1.0}})
+    status = _run(check_openrouter_credits(_client(_route(key=key)), "sk-x"))
+    assert status.credits == pytest.approx(4.0)
+    assert status.is_lifetime is False
 
-    assert _run(check_openrouter_credits(_client(handler), "sk-x")) is None
+
+def test_credit_check_unlimited_key_returns_none():
+    key = httpx.Response(200, json={"data": {"limit": None, "usage": 3.0}})
+    status = _run(check_openrouter_credits(_client(_route(key=key)), "sk-x"))
+    assert status.credits is None
+    assert status.is_lifetime is False
 
 
 def test_credit_check_unexpected_shape_returns_none():
-    def handler(request):
-        return httpx.Response(200, json={"totally": "different"})
-
-    assert _run(check_openrouter_credits(_client(handler), "sk-x")) is None
+    both = httpx.Response(200, json={"totally": "different"})
+    status = _run(check_openrouter_credits(_client(_route(credits=both, key=both)), "sk-x"))
+    assert status.credits is None
 
 
 def test_credit_check_http_error_returns_none():
-    def handler(request):
-        return httpx.Response(500, json={"error": "x"})
-
-    assert _run(check_openrouter_credits(_client(handler), "sk-x")) is None
+    err = httpx.Response(500, json={"error": "x"})
+    status = _run(check_openrouter_credits(_client(_route(credits=err, key=err)), "sk-x"))
+    assert status.credits is None
 
 
 def test_credit_check_does_not_leak_key(capsys):
     secret = "sk-credit-secret-CAFE"
 
-    def handler(request):
+    def credits(request):
         assert request.headers.get("authorization") == f"Bearer {secret}"
-        return httpx.Response(200, json={"data": {"limit": 5.0, "usage": 1.0}})
+        return httpx.Response(200, json={"data": {"total_credits": 5.0, "total_usage": 1.0}})
 
-    _run(check_openrouter_credits(_client(handler), secret))
+    _run(check_openrouter_credits(_client(_route(credits=credits)), secret))
     captured = capsys.readouterr()
     assert secret not in captured.out
     assert secret not in captured.err
@@ -694,6 +715,17 @@ def test_warn_low_credits_prints_loud_warning(capsys):
     assert warned is True
     err = capsys.readouterr().err
     assert "WARNING" in err.upper()
+    assert "lifetime credit is $5.00" in err
+
+
+def test_warn_low_credits_key_fallback_softens_message(capsys):
+    # Key-limit fallback: do NOT assert a lifetime number; say we couldn't
+    # determine lifetime credits.
+    warned = warn_low_credits(5.0, threshold=10.0, is_lifetime=False)
+    assert warned is True
+    err = capsys.readouterr().err
+    assert "could not determine lifetime" in err.lower()
+    assert "lifetime credit is $5.00" not in err
 
 
 def test_warn_low_credits_silent_when_sufficient(capsys):

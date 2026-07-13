@@ -290,10 +290,16 @@ class LLMAgent:
         self, view: TradeView, *, pass1_prob: float, bill: BillFn
     ) -> TradeResult:
         if self.spec.adversary:
-            # Adversary: own system block, no evidence, no Pass-1 prior.
+            # Adversary: own system block, no evidence, no Pass-1 prior. The
+            # runner threads the ground-truth-wrong target side via the view;
+            # this branch never sees the latent state, only the named side.
+            assert view.adversary_target_side in ("YES", "NO"), (
+                "runner must set adversary_target_side for adversary agents"
+            )
             messages = pass2_adversary_messages(
                 view.question_text,
                 adversary_style=self.spec.adversary_style,
+                target_side=view.adversary_target_side,
                 price=view.price,
                 round=view.round,
                 n_rounds=view.n_rounds,

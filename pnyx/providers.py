@@ -53,7 +53,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import httpx
 from pydantic import ValidationError
@@ -69,6 +69,7 @@ __all__ = [
     "SchemaParseError",
     "check_openrouter_credits",
     "warn_low_credits",
+    "CreditStatus",
 ]
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -491,20 +492,52 @@ def _retry_after(resp: httpx.Response) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-async def check_openrouter_credits(
-    client: httpx.AsyncClient,
-    api_key: str,
-    *,
-    base_url: str = "https://openrouter.ai/api/v1",
-) -> float | None:
-    """Return remaining OpenRouter credit (limit - usage) in dollars, or None.
+class CreditStatus(NamedTuple):
+    """Result of :func:`check_openrouter_credits`.
 
-    ``GET {base_url}/key`` returns ``{"data": {"limit", "usage", ...}}``. A
-    None ``limit`` means an unlimited/pay-as-you-go key (no credit ceiling to
-    warn about) → None. Any unexpected shape or HTTP/transport error is
-    swallowed → None (the credit check must never block a run). The key is
-    sent only in the Authorization header.
+    * ``credits`` — remaining dollars, or ``None`` when unknown/unlimited.
+    * ``is_lifetime`` — ``True`` when ``credits`` is the account's authoritative
+      lifetime figure (from ``/credits``); ``False`` when it is only the API
+      KEY's spend headroom (the ``/key`` fallback), which is NOT the lifetime
+      credit and must not be reported as one.
     """
+
+    credits: float | None
+    is_lifetime: bool
+
+
+async def _fetch_lifetime_credits(
+    client: httpx.AsyncClient, api_key: str, base_url: str
+) -> float | None:
+    """Authoritative account lifetime credit via ``GET {base_url}/credits`` →
+    ``{"data": {"total_credits", "total_usage"}}`` (remaining = total_credits −
+    total_usage). ``None`` on any error/unexpected shape (caller falls back)."""
+    try:
+        resp = await client.get(
+            f"{base_url}/credits",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        if resp.status_code >= 400:
+            return None
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    block = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(block, dict) or "total_credits" not in block:
+        return None
+    try:
+        return float(block.get("total_credits")) - float(block.get("total_usage") or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _fetch_key_headroom(
+    client: httpx.AsyncClient, api_key: str, base_url: str
+) -> float | None:
+    """The API KEY's remaining spend headroom via ``GET {base_url}/key`` →
+    ``{"data": {"limit", "usage"}}`` (limit − usage). A ``None`` limit means a
+    pay-as-you-go key with no ceiling → ``None``. This is NOT the account
+    lifetime credit; the caller flags it ``is_lifetime=False``."""
     try:
         resp = await client.get(
             f"{base_url}/key",
@@ -515,7 +548,6 @@ async def check_openrouter_credits(
         data = resp.json()
     except (httpx.HTTPError, ValueError):
         return None
-
     block = data.get("data") if isinstance(data, dict) else None
     if not isinstance(block, dict) or "limit" not in block:
         return None
@@ -528,27 +560,67 @@ async def check_openrouter_credits(
         return None
 
 
+async def check_openrouter_credits(
+    client: httpx.AsyncClient,
+    api_key: str,
+    *,
+    base_url: str = "https://openrouter.ai/api/v1",
+) -> CreditStatus:
+    """Return a :class:`CreditStatus` for the OpenRouter account/key.
+
+    Prefers the account's real lifetime credit from ``GET {base_url}/credits``
+    (``data.total_credits − data.total_usage``); when that endpoint is
+    unavailable it falls back to the KEY's spend headroom from ``GET
+    {base_url}/key`` (``limit − usage``), which is only the key's ceiling and
+    must NOT be reported as lifetime credit (``is_lifetime=False``).
+
+    Any HTTP/transport/shape error at either step is swallowed — the credit
+    check must never block a run. The key is sent only in the Authorization
+    header.
+    """
+    lifetime = await _fetch_lifetime_credits(client, api_key, base_url)
+    if lifetime is not None:
+        return CreditStatus(lifetime, True)
+    headroom = await _fetch_key_headroom(client, api_key, base_url)
+    return CreditStatus(headroom, False)
+
+
 def warn_low_credits(
     credits: float | None,
     *,
     threshold: float = 10.0,
+    is_lifetime: bool = True,
     stream=None,
 ) -> bool:
-    """Print a LOUD warning to stderr when free-tier credit is below threshold.
+    """Print a LOUD warning to stderr when OpenRouter credit is below threshold.
 
     Returns True iff a warning was printed. ``None`` credit (unknown/unlimited)
-    never warns. Does not block — the free tier still works, but a low
-    lifetime-credit key risks the 50-requests/day cap.
+    never warns. Does not block — the free tier still works, but low lifetime
+    credit risks the 50-requests/day cap.
+
+    When ``is_lifetime`` is False the figure is only the API key's spend
+    headroom, not the account lifetime credit: the warning is softened to say we
+    *could not determine lifetime credits* rather than asserting a number.
     """
     if credits is None or credits >= threshold:
         return False
     out = stream if stream is not None else sys.stderr
     bar = "!" * 60
     print(bar, file=out)
-    print(
-        f"WARNING: OpenRouter lifetime credit is ${credits:.2f} (< ${threshold:.2f}). "
-        "Free models are capped at ~50 requests/day until credits are topped up.",
-        file=out,
-    )
+    if is_lifetime:
+        print(
+            f"WARNING: OpenRouter lifetime credit is ${credits:.2f} "
+            f"(< ${threshold:.2f}). Free models are capped at ~50 requests/day "
+            "until credits are topped up.",
+            file=out,
+        )
+    else:
+        print(
+            "WARNING: could not determine lifetime OpenRouter credits; only the "
+            f"API key's remaining spend headroom is known and it is low "
+            f"(< ${threshold:.2f}). Free models may be capped at ~50 "
+            "requests/day until account credits are confirmed/topped up.",
+            file=out,
+        )
     print(bar, file=out)
     return True

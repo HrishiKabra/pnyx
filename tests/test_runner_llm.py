@@ -326,13 +326,16 @@ def test_free_tier_check_warns_on_low_credit(tmp_path, monkeypatch, capsys):
     config = _llm_config(tmp_path, qfile, model_over=FREE_MODEL)
 
     def handler(request):
-        assert request.url.path.endswith("/key")
-        return httpx.Response(200, json={"data": {"limit": 5.0, "usage": 0.0}})
+        # Lifetime credit comes from /credits (preferred over the /key headroom).
+        assert request.url.path.endswith("/credits")
+        return httpx.Response(200, json={"data": {"total_credits": 5.0, "total_usage": 0.0}})
 
     holder = _ClientHolder(handler)
     asyncio.run(_free_tier_check(config, holder))
     asyncio.run(holder._client.aclose())
-    assert "WARNING" in capsys.readouterr().err  # < $10 => loud warning
+    err = capsys.readouterr().err
+    assert "WARNING" in err  # < $10 => loud warning
+    assert "lifetime credit is $5.00" in err
 
 
 def test_free_tier_check_noop_without_free_model(tmp_path, capsys):

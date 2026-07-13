@@ -127,16 +127,16 @@ def test_retry_message_includes_error_text():
 # ---------------------------------------------------------------------------
 
 
-def _adv_msgs(style="stealthy", price=0.7):
+def _adv_msgs(style="stealthy", price=0.7, target_side="NO"):
     return pass2_adversary_messages(
-        QUESTION, adversary_style=style,
+        QUESTION, adversary_style=style, target_side=target_side,
         price=price, round=2, n_rounds=3, bankroll=300.0,
         max_affordable_yes=400.0, max_affordable_no=350.0,
     )
 
 
 def test_adversary_prompt_version_distinct_and_tagged():
-    assert ADVERSARY_PROMPT_VERSION == "p3-v3-adv1"
+    assert ADVERSARY_PROMPT_VERSION == "p3-v3-adv2"
     assert ADVERSARY_PROMPT_VERSION != PROMPT_VERSION
 
 
@@ -170,11 +170,32 @@ def test_adversary_styles_differ():
     assert "aggressive" in obvious
 
 
+def test_adversary_prompt_pushes_named_target_side():
+    # The prompt names ONLY a side to push toward (no price-vs-0.5 rule): NO or
+    # YES verbatim, in the buy instruction. The old "above 0.5 -> buy NO" rule
+    # must be gone entirely.
+    no_text = _text(_adv_msgs(target_side="NO", price=0.7))
+    assert "push the market price toward NO" in no_text
+    assert "buy NO" in no_text
+    yes_text = _text(_adv_msgs(target_side="YES", price=0.3))
+    assert "push the market price toward YES" in yes_text
+    assert "buy YES" in yes_text
+    # No surviving trace of the removed price-vs-0.5 direction rule.
+    for text in (no_text.lower(), yes_text.lower()):
+        assert "above 0.5" not in text
+        assert "below 0.5" not in text
+
+
 def test_adversary_prompt_never_leaks_hidden_state():
+    # Extended for the target-side rewrite: on top of the shared forbidden set,
+    # the adversary prompt must never name the ground-truth quantities it is
+    # (implicitly) opposing.
+    banned_extra = ["true probability", "posterior", "accuracy", "latent"]
     for style in ("stealthy", "obvious"):
-        text = _text(_adv_msgs(style=style)).lower()
-        for banned in _FORBIDDEN:
-            assert banned not in text, f"adversary prompt leaked {banned!r}"
+        for target_side in ("YES", "NO"):
+            text = _text(_adv_msgs(style=style, target_side=target_side)).lower()
+            for banned in _FORBIDDEN + banned_extra:
+                assert banned not in text, f"adversary prompt leaked {banned!r}"
 
 
 # ---------------------------------------------------------------------------

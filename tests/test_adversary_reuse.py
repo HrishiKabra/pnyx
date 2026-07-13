@@ -21,7 +21,7 @@ from pnyx.runner import (
 )
 from pnyx.schemas import Belief, QuestionRecord, RunConfig, Trade
 
-from tests._fixtures import write_questions_file
+from tests._fixtures import make_rendered_question, write_questions_file
 from tests.test_runner_llm import MODEL, ScriptedProvider
 
 _ENV = {
@@ -96,6 +96,38 @@ def test_adversary_excluded_from_pass1_and_tagged(tmp_path):
     honest_calls = [msgs for (schema, msgs) in prov.calls
                     if schema == "Trade" and "maximize your bankroll" in msgs[0]["content"]]
     assert len(adv_calls) == 2 and len(honest_calls) == 2
+
+
+def _write_question_with_latent(path, latent_state):
+    """A single rendered question with a forced ``latent_state`` (0 or 1)."""
+    rec = make_rendered_question("q000", seed=1234).model_copy(
+        update={"latent_state": latent_state})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(rec.model_dump_json() + "\n")
+    return path
+
+
+@pytest.mark.parametrize("latent_state,expected_side", [(1, "NO"), (0, "YES")])
+def test_adversary_pushes_ground_truth_wrong_side(tmp_path, latent_state, expected_side):
+    # The runner maps latent_state -> the WRONG side (latent 1 -> NO, 0 -> YES)
+    # and threads it into the adversary prompt via TradeView. No live-consensus /
+    # price-vs-0.5 logic anywhere.
+    qfile = _write_question_with_latent(tmp_path / "ds.jsonl", latent_state)
+    config = _llm_config(
+        tmp_path, qfile, condition="ADV", n_rounds=1,
+        agents=[_honest("p0", 0, "contrarian"), _adv("adv0", style="stealthy")],
+    )
+    prov = ScriptedProvider(
+        trade_maker=lambda i: Trade(belief=0.5, action="hold", shares=0.0, rationale="t"))
+    run_experiment(config, provider=prov)
+
+    adv_calls = [msgs for (schema, msgs) in prov.calls
+                 if schema == "Trade" and "distort" in msgs[0]["content"].lower()]
+    assert adv_calls, "adversary Trade call not found"
+    system = adv_calls[0][0]["content"]
+    other = "YES" if expected_side == "NO" else "NO"
+    assert f"push the market price toward {expected_side}" in system
+    assert f"push the market price toward {other}" not in system
 
 
 # ---------------------------------------------------------------------------

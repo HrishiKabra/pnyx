@@ -373,8 +373,8 @@ async def _free_tier_check(config: RunConfig, provider: Provider) -> None:
     client = getattr(provider, "_client", None)
     if client is None:
         return
-    credits = await check_openrouter_credits(client, api_key, base_url=spec.base_url)
-    warn_low_credits(credits)
+    status = await check_openrouter_credits(client, api_key, base_url=spec.base_url)
+    warn_low_credits(status.credits, is_lifetime=status.is_lifetime)
 
 
 async def _run_all(
@@ -473,6 +473,15 @@ def _view_prose(q: QuestionRecord, spec) -> tuple[str, list[str]]:
         [q.shards[i] for i in spec.shard_indices] if q.shards else []
     )
     return question_text, shard_texts
+
+
+def adversary_target_side(latent_state: int) -> str:
+    """The ground-truth-WRONG side a condition-D adversary is tasked to push the
+    price toward: ``"YES"`` when the question truly resolves NO
+    (``latent_state == 0``), ``"NO"`` when it truly resolves YES. This
+    latent->wrong-side mapping lives here in the runner; the prompt is told only
+    the resulting side, never the latent state."""
+    return "YES" if latent_state == 0 else "NO"
 
 
 def _make_bill(resources: _RunResources, model_spec: ModelSpec, key: TurnKey):
@@ -634,6 +643,11 @@ async def _run_market(
                 bankroll=cash,
                 max_affordable_yes=max_yes,
                 max_affordable_no=max_no,
+                # Adversary only: name the ground-truth-wrong side to push toward.
+                # Honest agents get None (their path is unchanged).
+                adversary_target_side=(
+                    adversary_target_side(q.latent_state) if spec.adversary else None
+                ),
             )
 
             if spec.kind == "llm":
