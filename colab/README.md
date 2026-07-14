@@ -139,6 +139,10 @@ json_schema` via guided decoding.
   (e.g. `4096`) and/or lower `--gpu-memory-utilization` (e.g. `0.85`); rerun
   Cell 4. A T4's 16GB is tight — leaving less KV-cache headroom (shorter
   `max-model-len`) is the primary lever.
+- **`ImportError: libcudart.so.13`**: the `vllm` wheel didn't match Colab's
+  CUDA runtime (Colab ships CUDA 12.x); the install cell uses
+  `uv pip install --system vllm --torch-backend=auto` to prevent this. If it
+  still occurs, restart the runtime and re-run the install cell.
 - **403 / gated repo error downloading weights**: you haven't accepted the
   license for `meta-llama/Llama-3.1-8B-Instruct` on the Hub with the account
   whose token you pasted in Cell 3, or the token is wrong/expired. Fix at
