@@ -15,7 +15,7 @@ _ALL = ["A", "B1", "B3", "C", "W_fixed", "W_shuffled", "D_k1", "D_k3", "D_k10"]
 
 _V4_FLASH = "deepseek/deepseek-v4-flash"
 _NEMOTRON_FREE = "nvidia/nemotron-3-super-120b-a12b:free"
-_LLAMA = "meta-llama/Llama-3.1-8B-Instruct"
+_LLAMA = "meta-llama/llama-3.1-8b-instruct"
 
 
 def _cfg(name):
@@ -71,7 +71,7 @@ def test_conditions_and_dirs_unique():
 @pytest.mark.parametrize("name,model_id,api_env,base_is_openrouter", [
     ("A", _V4_FLASH, "OPENROUTER_KEY", True),
     ("B3", _NEMOTRON_FREE, "OPENROUTER_KEY", True),
-    ("B1", _LLAMA, "PNYX_LOCAL_KEY", False),
+    ("B1", _LLAMA, "OPENROUTER_KEY", True),
 ])
 def test_homogeneous_pool(name, model_id, api_env, base_is_openrouter):
     c = _cfg(name)
@@ -83,12 +83,7 @@ def test_homogeneous_pool(name, model_id, api_env, base_is_openrouter):
     spec = next(iter(c.models.values()))
     assert spec.api_key_env == api_env
     assert spec.supports_json_schema is True
-    if base_is_openrouter:
-        assert spec.base_url == "https://openrouter.ai/api/v1"
-    else:
-        assert spec.base_url == "REPLACE_WITH_COLAB_URL"
-        assert spec.rpm_limit == 120
-        assert spec.price_in == 0.0 and spec.price_out == 0.0
+    assert base_is_openrouter and spec.base_url == "https://openrouter.ai/api/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +99,7 @@ def test_C_mixed_pool():
         mid = c.models[a.model].model_id
         counts[mid] = counts.get(mid, 0) + 1
     assert counts == {_LLAMA: 2, _V4_FLASH: 2, _NEMOTRON_FREE: 2}
-    assert c.models["local"].base_url == "REPLACE_WITH_COLAB_URL"
+    assert c.models["llama-8b"].base_url == "https://openrouter.ai/api/v1"
 
 
 # ---------------------------------------------------------------------------
