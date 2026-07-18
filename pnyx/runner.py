@@ -562,9 +562,11 @@ async def _run_question(
             bill = _make_bill(resources, config.models[spec.model], key)
             try:
                 result = await llm_agents[spec.agent_id].elicit_belief(view, bill=bill)
-            except (TurnParked, ProviderError):
+            except (TurnParked, ProviderError) as exc:
                 # Provider unavailable: park the whole question (nothing logged
                 # from here on), resume retries it. See module docstring.
+                print(f"[parked] {condition} seed={seed} {qid} pass1 "
+                      f"agent={spec.agent_id}: {exc}")
                 return
             belief = result.belief
             parse_failed = result.parse_failed
@@ -657,10 +659,13 @@ async def _run_market(
                     result = await llm_agents[agent_id].decide_trade(
                         view, pass1_prob=pass1_probs.get(agent_id, 0.5), bill=bill,
                     )
-                except (TurnParked, ProviderError):
+                except (TurnParked, ProviderError) as exc:
                     # Park the rest of THIS question's market so no later turn
                     # is logged out of order (replay reconstructs only from
                     # logged trades). No settlement — resume retries from here.
+                    print(f"[parked] {config.condition} seed={seed} "
+                          f"{q.question_id} market round={rnd} "
+                          f"agent={agent_id}: {exc}")
                     return
                 trade = result.trade
                 parse_failed = result.parse_failed
