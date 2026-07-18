@@ -53,6 +53,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # noqa: E402 — must precede pyplot import (headless tests)
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,15 @@ _MECH_LABEL: dict[str, str] = {
 }
 
 _FIGSIZE = (10.0, 4.0)
+
+# Fig 2(a) direct-label placement: default up-right point-offset, flipped to
+# down-left when a centroid sits within _LABEL_CONFLICT_FRAC (axes-fraction
+# Euclidean distance — scale-free, independent of the actual rho/gapdiff
+# range) of an already-placed one, so two close clusters' labels point away
+# from each other instead of floating ambiguously between them.
+_LABEL_OFFSET = (8, 10)
+_LABEL_OFFSET_ALT = (-8, -10)
+_LABEL_CONFLICT_FRAC = 0.08
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +196,14 @@ def _bar_colors() -> list[str]:
     return [MARKET_COLOR] + [_POOL_COLOR[m] for m in _MECHANISMS[1:]]
 
 
+def _format_pvalue(p: float) -> str:
+    """``p=0.03``-style annotation text; below 0.005 (would otherwise round
+    to the misleading ``p=0.00``) prints ``p<0.01`` instead."""
+    if p < 0.005:
+        return "p<0.01"
+    return f"p={p:.2f}"
+
+
 def _plot_bar_panel(ax, panel: dict[str, dict[str, float | None]], ylabel: str) -> None:
     mechs = _MECHANISMS
     x = np.arange(len(mechs))
@@ -218,7 +236,7 @@ def _plot_bar_panel(ax, panel: dict[str, dict[str, float | None]], ylabel: str) 
         ax.text(
             xi,
             -0.07,
-            f"p={p:.2f}",
+            _format_pvalue(p),
             transform=ax.get_xaxis_transform(),
             ha="center",
             va="top",
@@ -320,7 +338,45 @@ def fig2_data(
     return {"phase_map": phase_map, "manipulation": manipulation}
 
 
+def _condition_label_offsets(
+    ax, centroids: dict[str, tuple[float, float]]
+) -> dict[str, tuple[float, float]]:
+    """One (dx, dy) point-offset per condition for Fig 2(a)'s direct labels.
+
+    Default is up-right (``_LABEL_OFFSET``). Processing conditions in sorted
+    name order (deterministic), a condition's centroid is compared — in
+    axes-fraction space, via the axes' OWN current transform, so the
+    threshold is scale-free regardless of the actual rho/gapdiff range — to
+    every already-placed centroid; if any is within ``_LABEL_CONFLICT_FRAC``,
+    this condition's label is flipped to down-left (``_LABEL_OFFSET_ALT``)
+    instead, so two close clusters' leader lines point away from each other
+    rather than both floating up-right and colliding. Entirely data-driven
+    (no hardcoded condition names or coordinates) — requires the axes'
+    x/y limits to already reflect all plotted data (call after the scatter
+    + any autoscale-affecting artists like ``axhline``, then
+    ``ax.autoscale_view()``)."""
+    inv = ax.transAxes.inverted()
+
+    def _to_frac(xy: tuple[float, float]) -> tuple[float, float]:
+        fx, fy = inv.transform(ax.transData.transform(xy))
+        return float(fx), float(fy)
+
+    frac = {cond: _to_frac(xy) for cond, xy in centroids.items()}
+
+    offsets: dict[str, tuple[float, float]] = {}
+    placed: list[tuple[float, float]] = []
+    for cond in sorted(centroids):
+        fx, fy = frac[cond]
+        conflict = any(
+            math.hypot(fx - px, fy - py) < _LABEL_CONFLICT_FRAC for px, py in placed
+        )
+        offsets[cond] = _LABEL_OFFSET_ALT if conflict else _LABEL_OFFSET
+        placed.append((fx, fy))
+    return offsets
+
+
 def _plot_phase_map(ax, phase_map: dict[str, dict[str, list]]) -> None:
+    centroids: dict[str, tuple[float, float]] = {}
     for cond, d in phase_map.items():
         color = _CONDITION_COLOR.get(cond)
         marker = _CONDITION_MARKER.get(cond)
@@ -340,17 +396,27 @@ def _plot_phase_map(ax, phase_map: dict[str, dict[str, list]]) -> None:
             linewidth=0.4,
             zorder=3,
         )
-        cx, cy = float(np.mean(d["rho"])), float(np.mean(d["gapdiff"]))
+        centroids[cond] = (float(np.mean(d["rho"])), float(np.mean(d["gapdiff"])))
+
+    ax.axhline(0.0, color="#999999", linestyle="--", linewidth=1, zorder=1)
+    # Force the view limits to reflect every artist added so far (scatter +
+    # axhline) BEFORE computing axes-fraction distances for label placement
+    # — transData/transAxes are only meaningful once xlim/ylim are final.
+    ax.autoscale_view()
+
+    offsets = _condition_label_offsets(ax, centroids)
+    for cond, (cx, cy) in centroids.items():
         ax.annotate(
             cond,
             (cx, cy),
             textcoords="offset points",
-            xytext=(6, 6),
+            xytext=offsets[cond],
+            ha="center",
+            va="center",
             fontsize=8,
             color=_TEXT_COLOR,
+            arrowprops=dict(arrowstyle="-", color=_TEXT_COLOR, lw=0.5),
         )
-
-    ax.axhline(0.0, color="#999999", linestyle="--", linewidth=1, zorder=1)
 
     # "market helps"/"hurts" annotated relative to the y=0 line itself (x in
     # axes-fraction, y in data coords) so they sit next to the line
