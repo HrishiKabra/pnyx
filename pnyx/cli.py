@@ -13,6 +13,11 @@ Invoked as a module (no console-script install needed):
     # P3 pilot analysis (offline, no network — reads logs a run already wrote):
     python -m pnyx.cli analyze-pilot --runs data/pilot_b20 data/pilot_b40 [--progress]
 
+    # P5 main-run analysis (offline, no network — reads the P4 grid's logs,
+    # cost ledgers, and config YAMLs; writes figures + tables + stats):
+    python -m pnyx.cli analyze-main --data-root data/main --configs pnyx/configs/main \
+        --out analysis_out [--bootstrap-seed 0]
+
 ``run`` executes or resumes the experiment (resume is the default — there is no
 resume flag; rerunning the same command after any crash continues from the last
 completed turn). ``status`` prints turns done/remaining per condition and
@@ -34,6 +39,20 @@ parse-fail / price-degeneracy / posterior-gap / Brier / cost stats; see
 ``pnyx.analysis.pilot``. ``--progress`` writes/replaces a "## P3 pilot"
 section in PROGRESS.md.
 
+``analyze-main`` is the P5 finale: it loads every condition of the P4 main-run
+grid (``pnyx.analysis.mainrun.load_condition``), computes each one's
+per-question metrics + team-rho (``mainrun.question_metrics`` /
+``team_rho_summary``), the H3 adversary summary and H-wealth order effects
+(``pnyx.analysis.manipulation``), then writes ``fig1.png/pdf``,
+``fig2.png/pdf`` (``pnyx.analysis.figures``), ``table1.md``, ``table2.md``,
+and ``stats.md`` (``pnyx.analysis.tables``) into ``--out``. This is the ONLY
+place in the codebase that reads a condition's cost ledger directly and loads
+its config YAML (Table 2's agent→model mapping) — every analysis module it
+calls is a pure function over already-loaded data, per Global Constraints
+("I/O only in the CLI layer"). Config YAML filenames are matched
+case-insensitively to the condition name (the repo's real configs are
+lowercase, e.g. ``D_k1.yaml``, for condition ``"D_K1"``).
+
 Entry mechanism: ``python -m pnyx.cli`` runs this file as ``__main__`` via the
 ``main()`` guard below. No ``__main__.py`` and no ``[project.scripts]`` console
 script are defined — module invocation keeps the package import-only and avoids
@@ -45,7 +64,11 @@ import sys
 from pathlib import Path
 
 from pnyx import dataset
+from pnyx.analysis import figures, manipulation
+from pnyx.analysis import mainrun as mainrun_analysis
 from pnyx.analysis import pilot as pilot_analysis
+from pnyx.analysis import tables as tables_analysis
+from pnyx.analysis.pilot import _read_costs
 from pnyx.runner import load_config, run_experiment, status_report
 
 
@@ -93,6 +116,19 @@ def _build_parser() -> argparse.ArgumentParser:
                            help="write/replace the '## P3 pilot' section in PROGRESS.md")
     analyze_p.add_argument("--progress-path", default="PROGRESS.md",
                            help="PROGRESS.md path (only used with --progress)")
+
+    analyze_main_p = sub.add_parser(
+        "analyze-main",
+        help="aggregate the P4 main-run grid into fig1/2 + table1/2 + stats.md",
+    )
+    analyze_main_p.add_argument("--data-root", required=True,
+                                help="P4 main-run data directory, e.g. data/main")
+    analyze_main_p.add_argument("--configs", required=True,
+                                help="P4 main-run config directory, e.g. pnyx/configs/main")
+    analyze_main_p.add_argument("--out", required=True,
+                                help="output directory for figures/tables/stats.md")
+    analyze_main_p.add_argument("--bootstrap-seed", type=int, default=0,
+                                help="seed threaded into every paired bootstrap (determinism)")
 
     return parser
 
@@ -152,6 +188,144 @@ def _cmd_analyze_pilot(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# analyze-main (P5)
+# ---------------------------------------------------------------------------
+
+# D_K* condition name -> its adversary bankroll multiplier (CLAUDE.md §7).
+_D_K_MULTIPLIER: dict[str, int] = {"D_K1": 1, "D_K3": 3, "D_K10": 10}
+
+
+def _config_path_for_condition(configs_dir: Path, condition: str) -> Path:
+    """Case-insensitive match of a condition name (e.g. ``"D_K1"``,
+    ``"W_FIXED"``) to its config YAML (the repo's real files are lowercase:
+    ``D_k1.yaml``, ``W_fixed.yaml``)."""
+    target = condition.lower()
+    for p in sorted(configs_dir.glob("*.yaml")):
+        if p.stem.lower() == target:
+            return p
+    raise FileNotFoundError(
+        f"no config YAML for condition {condition!r} found in {configs_dir}"
+    )
+
+
+def _model_map_for_condition(configs_dir: Path, condition: str) -> dict[str, str]:
+    """That condition's ``agent_id -> model_id`` mapping, read from its
+    config YAML (Table 2's per-model parse-fail breakdown needs this; a
+    condition's event log carries only agent_ids, never model identity)."""
+    config = load_config(str(_config_path_for_condition(configs_dir, condition)))
+    return {
+        a.agent_id: config.models[a.model].model_id
+        for a in config.agents
+        if a.kind == "llm"
+    }
+
+
+def _condition_total_cost(data_root: Path, condition: str) -> float:
+    """Sum of ``{condition}.costs.jsonl`` under ``data_root/{condition}/``
+    (0.0 if the ledger doesn't exist, e.g. an all-free-tier condition that
+    never billed)."""
+    ledger = data_root / condition / f"{condition}.costs.jsonl"
+    if not ledger.exists():
+        return 0.0
+    return sum(entry.cost for entry in _read_costs(ledger))
+
+
+def _grand_mean_std(df, col: str) -> tuple[float, float]:
+    per_seed = df.groupby("seed")[col].mean().to_numpy(dtype=float)
+    return float(per_seed.mean()), float(per_seed.std())
+
+
+def _cmd_analyze_main(args) -> int:
+    data_root = Path(args.data_root)
+    configs_dir = Path(args.configs)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bootstrap_seed = args.bootstrap_seed
+    conditions = tables_analysis.MAIN_CONDITIONS
+
+    loaded = {
+        cond: mainrun_analysis.load_condition(data_root / cond) for cond in conditions
+    }
+
+    metrics_by_cond = {}
+    for cond in conditions:
+        source_name = tables_analysis.PASS1_SOURCE.get(cond)
+        source = loaded[source_name] if source_name is not None else None
+        metrics_by_cond[cond] = mainrun_analysis.question_metrics(loaded[cond], source)
+
+    rho_by_cond = {
+        cond: mainrun_analysis.team_rho_summary(loaded[cond])
+        for cond in ("A", "B1", "B3", "C")
+    }
+
+    costs_by_cond = {
+        cond: _condition_total_cost(data_root, cond) for cond in conditions
+    }
+    model_by_cond = {
+        cond: _model_map_for_condition(configs_dir, cond) for cond in conditions
+    }
+
+    wealth_effects = manipulation.wealth_order_effects(
+        metrics_by_cond["A"], metrics_by_cond["W_FIXED"], metrics_by_cond["W_SHUFFLED"],
+        n_boot=10_000, seed=bootstrap_seed,
+    )
+    adv_dfs = {
+        k: manipulation.adversary_metrics(loaded[cond], metrics_by_cond["C"])
+        for cond, k in _D_K_MULTIPLIER.items()
+    }
+    adv_summary = manipulation.summarize_adversary(adv_dfs)
+
+    figures.fig1(metrics_by_cond["A"], out_dir)
+    figures.fig2(
+        rho_by_cond,
+        {c: metrics_by_cond[c] for c in ("A", "B1", "B3", "C")},
+        adv_summary,
+        out_dir,
+    )
+
+    (out_dir / "table1.md").write_text(
+        tables_analysis.table1(metrics_by_cond, costs_by_cond)
+    )
+    (out_dir / "table2.md").write_text(
+        tables_analysis.table2(metrics_by_cond, loaded, model_by_cond)
+    )
+    (out_dir / "stats.md").write_text(
+        tables_analysis.stats_report(
+            metrics_by_cond, rho_by_cond, adv_summary, wealth_effects,
+            n_boot=10_000, bootstrap_seed=bootstrap_seed,
+        )
+    )
+
+    gap_mean, gap_std = _grand_mean_std(metrics_by_cond["A"], "market_gap")
+    brier_mean, brier_std = _grand_mean_std(metrics_by_cond["A"], "market_brier")
+    h1_vs_mean = mainrun_analysis.compare(
+        metrics_by_cond["A"], "market_gap", "mean_gap", n_boot=10_000, seed=bootstrap_seed
+    )
+    total_spend = sum(costs_by_cond.values())
+
+    print("=== Pnyx P5 analysis summary ===")
+    print(
+        f"H1 (condition A): market gap = {gap_mean:.3f} +/- {gap_std:.3f}, "
+        f"market Brier = {brier_mean:.3f} +/- {brier_std:.3f}"
+    )
+    print(
+        f"H1 market vs. mean pool: Delta gap = {h1_vs_mean.mean_diff:.3f} "
+        f"[{h1_vs_mean.ci[0]:.3f}, {h1_vs_mean.ci[1]:.3f}], "
+        f"Wilcoxon p = {h1_vs_mean.wilcoxon_p:.3f}"
+    )
+    flip_rates = ", ".join(
+        f"k={int(row.k)}: {row.flip_rate:.3f}"
+        for row in adv_summary.sort_values("k").itertuples()
+    )
+    print(f"H3 flip rates: {flip_rates}")
+    print(f"Total spend across ledgers: ${total_spend:.4f}")
+    print(
+        f"Wrote fig1.png/pdf, fig2.png/pdf, table1.md, table2.md, stats.md -> {out_dir}"
+    )
+    return 0
+
+
 _DISPATCH = {
     "run": _cmd_run,
     "status": _cmd_status,
@@ -159,6 +333,7 @@ _DISPATCH = {
     "merge-render": _cmd_merge_render,
     "verify-report": _cmd_verify_report,
     "analyze-pilot": _cmd_analyze_pilot,
+    "analyze-main": _cmd_analyze_main,
 }
 
 
