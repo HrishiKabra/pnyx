@@ -170,6 +170,24 @@ def test_adversary_metrics_not_recovered_target_yes():
     assert math.isnan(row["recovery_rounds"])
 
 
+def test_adv_pnl_baseline_scales_with_k_from_data():
+    # k=3-style adversary: starts at 300 (read from data as bankroll_after+cost
+    # of the first trade), not the constant 100. Proves the baseline scales.
+    trades = [
+        _trade("qk3", "adv0", 1, condition="D_K3", price_before=0.5, price_after=0.35,
+               cost=10.0, bankroll_after=290.0, action="buy_no", shares=10.0),
+        _trade("qk3", "adv0", 2, condition="D_K3", price_before=0.35, price_after=0.3,
+               cost=15.0, bankroll_after=275.0, action="buy_no", shares=15.0),
+    ]
+    settlements = [_settlement("qk3", 1, 0.3, condition="D_K3", payouts={"adv0": 12.0})]
+    cond = _cond("D_K3", {0: (trades, settlements)})
+    ref = _ref([[0, "qk3", 0.7, (0.7 - 1) ** 2]])
+
+    row = manipulation.adversary_metrics(cond, ref).iloc[0]
+    # start = 290 + 10 = 300; adv_pnl = payout(12) + final(275) - 300 = -13
+    assert row["adv_pnl"] == pytest.approx(12.0 + 275.0 - 300.0)  # -13.0, NOT +187
+
+
 # ---------------------------------------------------------------------------
 # No adversary trade edge case
 # ---------------------------------------------------------------------------

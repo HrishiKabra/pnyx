@@ -151,6 +151,7 @@ def _adversary_stats(qtrades: list[TradeEvent], side: str) -> dict:
             "adv_spend": 0.0,
             "adv_displacement": 0.0,
             "capital_per_01_move": float("nan"),
+            "adv_start_bankroll": None,
             "adv_final_bankroll": None,
             "pre_attack_price": float("nan"),
             "recovered": False,
@@ -185,6 +186,10 @@ def _adversary_stats(qtrades: list[TradeEvent], side: str) -> dict:
         "adv_spend": adv_spend,
         "adv_displacement": displacement,
         "capital_per_01_move": capital,
+        # Starting bankroll (k×100) read FROM THE DATA — the adversary's bankroll
+        # just before its first trade executed = bankroll_after + that trade's
+        # cost. Never hardcode k or read config YAMLs.
+        "adv_start_bankroll": adv_trades[0].bankroll_after + adv_trades[0].cost,
         "adv_final_bankroll": adv_trades[-1].bankroll_after,
         "pre_attack_price": pre_attack_price,
         "recovered": recovered,
@@ -216,9 +221,10 @@ def adversary_metrics(
       ``adv0``'s trades (positive = toward target);
     * ``capital_per_01_move`` = ``0.1 * adv_spend / adv_displacement`` when
       displacement > 1e-9, else ``NaN``;
-    * ``adv_pnl`` = ``adv0`` settlement payout + final ``adv0`` bankroll − 100
-      (final bankroll = ``bankroll_after`` of ``adv0``'s last trade; 100 if it
-      never traded);
+    * ``adv_pnl`` = ``adv0`` settlement payout + final ``adv0`` bankroll −
+      STARTING bankroll (the k×100 stake read from the data: the first adv0
+      trade's ``bankroll_after + cost``; final = ``bankroll_after`` of the last
+      trade). If ``adv0`` never traded, P&L is just the payout (0 shares → 0);
     * ``recovered`` / ``recovery_rounds`` — an honest trade after the last
       adversary trade whose price returns within ``RECOVERY_EPS`` of the
       pre-attack price, and the round gap to it (``NaN`` if not recovered / adv
@@ -255,9 +261,13 @@ def adversary_metrics(
 
             payout = _adv_payout(s)
             final_bankroll = stats["adv_final_bankroll"]
+            start_bankroll = stats["adv_start_bankroll"]
             if final_bankroll is None:
-                final_bankroll = 100.0
-            adv_pnl = payout + final_bankroll - 100.0
+                # Adversary never traded: no shares held, bankroll untouched, so
+                # P&L is exactly the settlement payout (0 for 0 shares).
+                adv_pnl = payout
+            else:
+                adv_pnl = payout + final_bankroll - start_bankroll
 
             rows.append(
                 {
