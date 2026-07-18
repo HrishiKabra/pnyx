@@ -9,7 +9,7 @@
 | P2 — Environment rendering | ✅ done (2026-07-13) | 40+10 questions rendered by 10 Sonnet 5 subagents, adversarially verified to 100% pass (2 fix rounds); datasets/questions_v1.jsonl + pilot frozen |
 | P3 — Pilot | ✅ done (2026-07-13) | b=40 + prompts p3-v3 frozen; 0% parse-fail; ~$0.09 spent; matching table partial (model C blocked on credits, model A pending Colab) |
 | P4 — Main runs | ✅ done (2026-07-18) | all 9 conditions (A, B1, B3, C, D_k1/k3/k10, W_fixed/shuffled) × 3 seeds complete, 0 turns remaining; main-run spend ≈ $0.63; matching pilot (pilot_free_b40) complete |
-| P5 — Analysis | not started | Fig 1, Fig 2, Tables 1–2, stats |
+| P5 — Analysis | ✅ done (2026-07-19) | analysis pipeline (baselines, mainrun, manipulation, figures, tables) + `analyze-main` CLI; deliverables in analysis_out/; 366 tests green under `-W error`; final whole-branch review: ready to ship |
 | P6 — Ship | not started | README, writeup, optional replay UI |
 
 ## Budget
@@ -30,6 +30,15 @@
 - 2026-07-18 (matching table COMPLETE): model C = nemotron-3-super-120b, standalone gap **0.2569** (pilot_free_b40, 7/240 parse-fails = 2.9% post-retry, market gap 0.2054/Brier 0.1874, degeneracy 10%). Final columns: A llama-3.1-8b **0.291**, B deepseek-v4-flash **0.268**, C nemotron **0.257** — closely matched; condition-C quality matching holds.
 - 2026-07-18 (ops note): the runner parks a question **silently** (exit 0, no output) when a provider call fails — including a missing `OPENROUTER_KEY` env var (runner reads the environment; it does not load `.env`). A resumed run that exits instantly with unchanged status likely has no key in its shell: `set -a; source .env; set +a` first. Consider a one-line `[parked]` print before P5.
 - 2026-07-13 (pilot observation, NOT a confirmed finding): at b=40 the market's final-price Brier (0.137) beat the mean pool (0.205) while its posterior GAP (0.275) was slightly worse than the pool's (0.218) — the market commits harder to the realized side; H1 adjudication awaits the main runs (40 q × 3 seeds).
+
+## P5 headline results (full stats in analysis_out/stats.md; deterministic under --bootstrap-seed 0)
+
+- **H1 REVERSED on condition A:** the market's final price has a LARGER posterior gap than every static pool (market 0.269±0.012 vs mean 0.218, median 0.187, LOP 0.209, calibrated stack 0.196). Significant vs median (Δ=0.081, p=0.005), LOP (p=0.048), stack (p=0.008); vs mean pool Δ=0.051, p=0.080. Brier deltas same direction, not individually significant (p≥0.085). Pre-registration allowed this direction ("a null or reversed result is a reportable finding") — the paper's headline is that LMSR trading DESTROYS information relative to independent pooling in this regime.
+- **H2a (replication holds):** mixed team C beats every homogeneous arm on market gap (vs B1 llama: Δ=−0.155, p<0.001; vs A deepseek: −0.044, p=0.106; vs B3 nemotron: −0.051, p=0.118).
+- **H2b (phase map, descriptive n=12):** Spearman r_s = 0.280 between team ρ (range 0.38–0.51) and market-vs-mean-pool deficit; C (lowest-ρ mixed team) is the only condition with seeds below zero (market helps). Direction consistent with the hypothesis; the ρ range achieved is narrow.
+- **H3:** flip rate rises with k (0.317 → 0.358 → 0.392); Brier degradation rises (0.105 → 0.219 → 0.312); adversary P&L is negative at every k (−$47 / −$143 / −$440 — the market taxes manipulation, and the absolute tax grows with capital). Recovery fraction is low (0.09–0.20). **CAVEAT for writeup:** median_recovery_rounds is structurally 0 — the adversary trades in every round including the last, so recovery timing is unmeasurable by design; report recovery FRACTION only. (An early "positive adversary P&L at k≥3" observation was an artifact of a wrong −100 baseline; corrected to k×100 starting bankroll.)
+- **H-wealth:** persistent wealth slightly WORSENS market gap vs per-question reset (W_FIXED−A Δ=0.050, p=0.035; W_SHUFFLED−A Δ=0.058, p=0.032); no order-dependence (fixed vs shuffled p=0.74).
+- Table 1/Table 2: total grid spend $0.7255; max market-maker subsidy 27.726 ≤ b·ln2 bound 27.73; parse failures 7 total across the grid.
 
 ## Dependency additions beyond stdlib/pydantic/httpx/openai/numpy/pandas/matplotlib/vllm
 
