@@ -79,10 +79,10 @@ def test_free_pool_config_loads_and_validates():
     spec = config.models["nemotron-120b-free"]
     assert spec.base_url == "https://openrouter.ai/api/v1"
     assert spec.api_key_env == "OPENROUTER_KEY"
-    assert spec.model_id == "nvidia/nemotron-3-super-120b-a12b:free"
-    assert spec.price_in == pytest.approx(0.0)
-    assert spec.price_out == pytest.approx(0.0)
-    assert spec.rpm_limit == 18
+    assert spec.model_id == "nvidia/nemotron-3-super-120b-a12b"
+    assert spec.price_in == pytest.approx(0.08)
+    assert spec.price_out == pytest.approx(0.45)
+    assert spec.rpm_limit == 300
     assert spec.supports_json_schema is True
 
     assert [a.agent_id for a in config.agents] == [f"p{i}" for i in range(6)]

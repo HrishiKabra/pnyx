@@ -158,8 +158,14 @@ def test_D_honest_agents_match_C():
     c = _cfg("C")
     c_sig = [(x.agent_id, tuple(x.shard_indices), c.models[x.model].model_id, x.persona)
              for x in c.agents]
+    # D's NVIDIA seats use the PAID mirror of the same weights C ran on the
+    # free tier (free-lane congestion; recorded in PROGRESS.md) — the ":free"
+    # suffix is a billing lane, not a different model, so normalize it here.
+    def _norm(sig):
+        return [(a, s, m.removesuffix(":free"), p) for (a, s, m, p) in sig]
+
     for name in ("D_k1", "D_k3", "D_k10"):
         d = _cfg(name)
         d_sig = [(x.agent_id, tuple(x.shard_indices), d.models[x.model].model_id, x.persona)
                  for x in d.agents if not x.adversary]
-        assert d_sig == c_sig
+        assert _norm(d_sig) == _norm(c_sig)
