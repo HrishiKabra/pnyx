@@ -9,6 +9,7 @@ dependencies = [
     "pandas",
     "pyyaml",
     "httpx",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
