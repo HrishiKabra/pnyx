@@ -36,6 +36,21 @@ infinity: a separable logistic likelihood has no finite maximizer, so
 there is nothing for Newton-Raphson to converge to. We fall back to the
 uncalibrated sigmoid of the test feature (a=1, b=0, the Newton-Raphson
 starting point) rather than returning a diverging or arbitrary fit.
+
+The same "MLE at infinity" failure mode also arises on training data that
+is separable but NOT degenerate — outcomes vary (some 0s, some 1s) but are
+perfectly predicted by the feature x (realistic for this project's "easy"
+questions in a leave-one-out fold). Newton-Raphson then drives a and/or b
+without bound rather than converging, which would either overflow ``exp``
+(a crash under this suite's ``pytest -W error``) or silently "converge" to
+an arbitrary huge, meaningless fit once every point's sigmoid saturates in
+floating point. Two defenses: (1) every sigmoid evaluation clips its linear
+predictor to ``[-_Z_CLIP, _Z_CLIP]`` first, so ``exp`` can never overflow;
+(2) ``_fit_platt`` reports non-convergence (iteration cap reached with no
+small-enough step, or parameters past a sane bound) and ``calibrated_stack``
+treats that exactly like the degenerate-outcome case: fall back to the
+uncalibrated sigmoid of the test feature, since calibration is meaningless
+when the training data has no finite MLE.
 """
 
 import numpy as np
@@ -59,6 +74,16 @@ _PROB_HI = 1.0 - 1e-6
 _MAX_NEWTON_ITERS = 100
 _NEWTON_TOL = 1e-10
 _RIDGE = 1e-6
+# Linear-predictor clip before every sigmoid evaluation: exp(30) ~= 1.07e13,
+# nowhere near float64 overflow, but large enough that a clipped sigmoid is
+# indistinguishable from an unclipped one for any well-posed fit — only
+# separable data (where a/b would otherwise run to +/-inf) ever reaches it.
+_Z_CLIP = 30.0
+# A recovered |a| or |b| past this is not a meaningful calibration fit under
+# any of this project's real feature scales (mean logits are bounded by the
+# probability clamp to roughly +/-13.8) — it is the signature of separable
+# training data that Newton-Raphson could not converge away from.
+_PARAM_BOUND = 1e3
 
 
 def assert_pass1(e: BeliefEvent) -> None:
@@ -112,27 +137,52 @@ def median_pool(events: list[BeliefEvent]) -> float:
     return (probs[mid - 1] + probs[mid]) / 2.0
 
 
+def _sigmoid(z):
+    """Numerically safe sigmoid: clips the linear predictor to
+    ``[-_Z_CLIP, _Z_CLIP]`` before exponentiating, so this can never
+    overflow ``exp`` — relevant when ``_fit_platt``'s a/b run away on
+    separable-but-non-degenerate training data (see module docstring).
+    Accepts a scalar or an ``ndarray``; returns the same shape."""
+    z_clipped = np.clip(z, -_Z_CLIP, _Z_CLIP)
+    return 1.0 / (1.0 + np.exp(-z_clipped))
+
+
 def log_opinion_pool(events: list[BeliefEvent]) -> float:
     """Equal-weight log opinion pool: clamp each prob to
     [1e-6, 1-1e-6], average the logits, sigmoid back."""
-    return float(1.0 / (1.0 + np.exp(-_mean_logit(events))))
+    return float(_sigmoid(_mean_logit(events)))
 
 
-def _fit_platt(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+def _fit_platt(x: np.ndarray, y: np.ndarray) -> tuple[float, float] | None:
     """Fit sigma(a*x + b) to (x, y) by maximizing Bernoulli log-likelihood
     via Newton-Raphson (IRLS), starting at a=1, b=0. At most
     ``_MAX_NEWTON_ITERS`` steps; stops when max(|delta_a|, |delta_b|) <
     ``_NEWTON_TOL``. A ridge of ``_RIDGE`` is subtracted from the Hessian
-    diagonal each step for solve stability.
+    diagonal each step for solve stability. Every sigmoid evaluation goes
+    through ``_sigmoid``'s clipped linear predictor, so this never raises
+    an ``exp`` overflow regardless of how large a/b get mid-fit.
+
+    Returns ``None`` — instead of a tuple — when the fit does not converge
+    within ``_MAX_NEWTON_ITERS`` steps, or when the recovered parameters
+    exceed ``_PARAM_BOUND`` in magnitude. Both are the signature of
+    separable-but-non-degenerate training data (outcomes vary but are
+    perfectly predicted by x): the true MLE is at infinity, so
+    Newton-Raphson has nothing finite to converge to, and once every
+    point's clipped sigmoid saturates the gradient goes to ~0 while a/b
+    sit at an arbitrary, meaningless magnitude rather than truly
+    converging. Callers must treat ``None`` exactly like the
+    degenerate-outcome case: fall back to the uncalibrated sigmoid of the
+    test feature (see ``calibrated_stack``).
 
     Caller's responsibility: ``y`` must not be degenerate (all-0/all-1) —
-    that case has no finite MLE and is handled by ``calibrated_stack``
+    that case also has no finite MLE and is handled by ``calibrated_stack``
     before this is called.
     """
     a, b = 1.0, 0.0
+    converged = False
     for _ in range(_MAX_NEWTON_ITERS):
         z = a * x + b
-        p = 1.0 / (1.0 + np.exp(-z))
+        p = _sigmoid(z)
         grad = np.array([np.sum((y - p) * x), np.sum(y - p)])
         w = p * (1.0 - p)
         # Hessian of the log-likelihood (negative semi-definite); ridge is
@@ -151,6 +201,8 @@ def _fit_platt(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
         a, b = a_new, b_new
         if converged:
             break
+    if not converged or abs(a) > _PARAM_BOUND or abs(b) > _PARAM_BOUND:
+        return None
     return a, b
 
 
@@ -165,8 +217,10 @@ def calibrated_stack(
     sigma(a*x + b) on the training questions' (mean-logit, outcome) pairs
     (see ``_fit_platt``) and returns sigma(a*x_test + b). Falls back to the
     uncalibrated sigma(x_test) when the training outcomes are degenerate —
-    including an empty ``train`` — since a separable Bernoulli likelihood
-    has no finite MLE (see module docstring).
+    including an empty ``train`` — or when ``_fit_platt`` reports
+    non-convergence (separable-but-non-degenerate training data), since
+    neither case has a finite MLE to calibrate against (see module
+    docstring).
     """
     # Guard every event unconditionally, before the degenerate-outcome
     # fallback branch, so the phase guard is not accidentally bypassed by
@@ -179,12 +233,15 @@ def calibrated_stack(
     outcomes = [outcome for _, outcome in train]
     degenerate = not outcomes or all(o == 0 for o in outcomes) or all(o == 1 for o in outcomes)
     if degenerate:
-        return float(1.0 / (1.0 + np.exp(-x_test)))
+        return float(_sigmoid(x_test))
 
     xs = np.array([_mean_logit(events) for events, _ in train], dtype=float)
     ys = np.array([float(o) for o in outcomes], dtype=float)
-    a, b = _fit_platt(xs, ys)
-    return float(1.0 / (1.0 + np.exp(-(a * x_test + b))))
+    fit = _fit_platt(xs, ys)
+    if fit is None:
+        return float(_sigmoid(x_test))
+    a, b = fit
+    return float(_sigmoid(a * x_test + b))
 
 
 def loo_calibrated_stack(

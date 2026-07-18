@@ -7,6 +7,7 @@ calls) so exact values can be hand-verified.
 """
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -276,3 +277,78 @@ def test_loo_calibrated_stack_matches_manual_leave_one_out():
         train = questions[:i] + questions[i + 1:]
         expected = baselines.calibrated_stack(train, events)
         assert predictions[i] == pytest.approx(expected, abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# 6. Separation robustness: non-degenerate but perfectly separable training
+#    data. Outcomes vary (unlike section 3's all-0/all-1 case) but are
+#    perfectly predicted by x, so the true MLE is still at infinity.
+#    Newton-Raphson previously either overflowed exp() (a crash under
+#    -W error) or "converged" to an arbitrary huge fit once every point's
+#    raw (unclipped) sigmoid saturated. Reviewer's construction: 60 points,
+#    y = 1{x > 0}.
+# ---------------------------------------------------------------------------
+
+
+def _separable_train_and_test():
+    xs = np.linspace(-3.0, 3.0, 60)
+    train = [
+        ([_belief(f"sep{i}", "a0", _sigmoid(x))], 1 if x > 0 else 0)
+        for i, x in enumerate(xs)
+    ]
+    test = [_belief("septest", "a0", _sigmoid(0.5))]
+    return train, test
+
+
+def test_fit_platt_separable_nondegenerate_returns_none():
+    xs = np.linspace(-3.0, 3.0, 60)
+    ys = np.array([1.0 if x > 0 else 0.0 for x in xs])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fit = baselines._fit_platt(xs, ys)
+    assert fit is None
+
+
+def test_calibrated_stack_separable_nondegenerate_falls_back_no_overflow():
+    """Must return a finite in-range probability with NO warnings (this
+    used to raise ``RuntimeWarning: overflow encountered in exp`` under
+    ``-W error``, or silently return a diverged garbage fit — reviewer
+    measured a=698.4, b=9.7 on this exact construction), and must equal
+    the uncalibrated fallback exactly (same contract as the degenerate-
+    outcome fallback in section 3)."""
+    train, test = _separable_train_and_test()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = baselines.calibrated_stack(train, test)
+
+    assert math.isfinite(result)
+    assert 0.0 <= result <= 1.0
+    assert result == pytest.approx(baselines.log_opinion_pool(test), abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 7. Hessian regression coverage with genuinely noisy data. Sections 4's
+#    exact-root construction starts Newton-Raphson at a point where the
+#    gradient is already ~0 (a=1, b=0 is already the MLE) — that exercises
+#    convergence but gives zero signal on whether the HESSIAN itself is
+#    correct, since any invertible-but-wrong Hessian still "converges"
+#    immediately from a zero gradient. This fits real Bernoulli-sampled
+#    noise so a mis-weighted or sign-flipped Hessian would visibly fail.
+# ---------------------------------------------------------------------------
+
+
+def test_fit_platt_recovers_noisy_logistic_parameters():
+    rng = np.random.default_rng(0)
+    n = 2000
+    x = rng.normal(size=n)
+    true_a, true_b = 2.3, -0.7
+    p_true = 1.0 / (1.0 + np.exp(-(true_a * x + true_b)))
+    y = rng.binomial(1, p_true).astype(float)
+
+    fit = baselines._fit_platt(x, y)
+
+    assert fit is not None
+    a, b = fit
+    assert a == pytest.approx(true_a, abs=0.2)
+    assert b == pytest.approx(true_b, abs=0.2)
