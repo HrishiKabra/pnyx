@@ -28,7 +28,8 @@ Global Constraints: "Never compute baselines from Pass-2 beliefs." The
 mean-pool-of-Pass-1 baseline and the per-model standalone gap both draw on
 ``BeliefEvent``s, which in a real run are always Pass-1 (``phase ==
 "independent"``) — but nothing in the schema itself prevents a corrupted or
-hand-edited log from smuggling in a market-phase belief. ``_assert_pass1``
+hand-edited log from smuggling in a market-phase belief. ``assert_pass1``
+(imported from ``pnyx.baselines``, the single implementation of this guard)
 / ``_mean_pool_prob`` assert this loudly rather than silently letting such
 contamination skew a baseline.
 """
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from pnyx.baselines import assert_pass1
 from pnyx.dataset import replace_progress_section
 from pnyx.env import subset_key
 from pnyx.schemas import BeliefEvent, CostEntry, QuestionRecord, parse_event
@@ -137,27 +139,14 @@ def _posterior_all(record: QuestionRecord) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def _assert_pass1(e: BeliefEvent) -> None:
-    """Guard: ``e`` must be a Pass-1 (``phase == "independent"``) belief.
-    Raises loudly on contamination rather than silently skewing a baseline
-    (see module docstring)."""
-    # ValueError, not `assert`: this scientific-integrity invariant must
-    # survive `python -O` (asserts are stripped from optimized bytecode).
-    if e.key.phase != "independent":
-        raise ValueError(
-            "phase guard violated: belief event has phase="
-            f"{e.key.phase!r} (expected 'independent') at key={e.key.as_tuple()}"
-        )
-
-
 def _pass1_beliefs(events: list) -> list[BeliefEvent]:
     """Every ``BeliefEvent`` in ``events``, guard-checked (see
-    ``_assert_pass1``). ``type == "belief"`` events are Pass-1 by
+    ``assert_pass1``). ``type == "belief"`` events are Pass-1 by
     construction in every real run, but this guard fires immediately on a
     hand-edited/corrupted log that tags one ``phase="market"``."""
     out = [e for e in events if e.type == "belief"]
     for e in out:
-        _assert_pass1(e)
+        assert_pass1(e)
     return out
 
 
@@ -168,7 +157,7 @@ def _mean_pool_prob(belief_events: list[BeliefEvent]) -> float:
     if not belief_events:
         raise ValueError("no belief events to pool")
     for e in belief_events:
-        _assert_pass1(e)
+        assert_pass1(e)
     return sum(e.belief.prob for e in belief_events) / len(belief_events)
 
 
@@ -228,7 +217,7 @@ def analyze_run(run_dir: str | Path) -> RunAnalysis:
     """Aggregate one pilot run directory into a :class:`RunAnalysis`.
 
     Never raises on an incomplete/not-yet-started run (missing files just
-    produce zeros/None + a note) EXCEPT the phase guard (``_assert_pass1``),
+    produce zeros/None + a note) EXCEPT the phase guard (``assert_pass1``),
     which is a hard scientific-integrity invariant, not a completeness
     concern, and a torn NON-final JSONL line (a real corruption, not the
     kill-safe truncated-tail case).
