@@ -10,7 +10,7 @@
 | P3 — Pilot | ✅ done (2026-07-13) | b=40 + prompts p3-v3 frozen; 0% parse-fail; ~$0.09 spent; matching table partial (model C blocked on credits, model A pending Colab) |
 | P4 — Main runs | ✅ done (2026-07-18) | all 9 conditions (A, B1, B3, C, D_k1/k3/k10, W_fixed/shuffled) × 3 seeds complete, 0 turns remaining; main-run spend ≈ $0.63; matching pilot (pilot_free_b40) complete |
 | P5 — Analysis | ✅ done (2026-07-19) | analysis pipeline (baselines, mainrun, manipulation, figures, tables) + `analyze-main` CLI; deliverables in analysis_out/; 366 tests green under `-W error`; final whole-branch review: ready to ship |
-| P6 — Ship | not started | README, writeup, optional replay UI |
+| P6 — Ship | ✅ done (2026-07-19) | docs/writeup.md (4,039 words, fact-checked ~70 claims, 2 review rounds) + public README.md (Fig 1 top, one-command repro on released data/main logs, $0.73 stated cost); Streamlit replay skipped (optional) |
 
 ## Budget
 
