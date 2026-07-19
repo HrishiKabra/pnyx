@@ -4,8 +4,12 @@ CLAUDE.md
 # Secrets
 .env
 
-# Experiment data (JSONL event logs)
-data/
+# Experiment data (JSONL event logs). The completed P4 main-run logs are
+# released (data/main/, 22MB) so `analyze-main` reproduces the paper's
+# figures/tables from a fresh clone; pilots and scratch runs stay ignored.
+data/*
+!data/main/
+data/main/**/*.pre-repair-backup
 
 # P2 dataset scratch (build/render/verify staging); the committed dataset lives
 # at datasets/questions_v1.jsonl + datasets/questions_pilot_v1.jsonl
