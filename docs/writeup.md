@@ -245,9 +245,15 @@ the team's error correlation ρ from the Pass-1 beliefs and the market's deficit
 relative to the mean pool (market gap − mean-pool gap). The Spearman rank
 correlation between ρ and the market deficit is r_s = 0.280 (n = 12). The sign
 is consistent with the hypothesis — higher correlation goes with a larger
-market deficit — and the mixed team C, which has the lowest ρ, is the **only**
-condition with per-seed deficits below zero (−0.010 and −0.029 on seeds 1 and
-2), i.e. the only setting where the market actually helps.
+market deficit — and the low-ρ mixed team C is the **only** condition with
+per-seed deficits below zero (−0.010 and −0.029 on seeds 1 and 2), i.e. the only
+setting where the market actually helps. The relationship is far from clean,
+however: the team with the genuinely lowest error correlation is the homogeneous
+deepseek pool A (team-mean ρ = 0.398, and the single lowest-ρ seed at 0.378),
+and it still shows a market deficit on every seed (+0.055 / +0.051 / +0.045).
+That is exactly why the rank correlation is weak (r_s = 0.280) rather than
+strong — low correlation is necessary but not sufficient for the market to help
+in this environment.
 
 This is **descriptive, not a fitted law** (caveat: narrow ρ range). The
 achieved ρ values span only 0.378 to 0.514, a narrow band, and with n = 12 we
@@ -305,9 +311,9 @@ found.
 
 ### 4.6 Secondary reporting
 
-Parse reliability was high across the grid: 7 parse failures total out of tens
-of thousands of LLM turns, with per-model rates at or below 0.19% in every
-condition (Table 2). The market maker's subsidy stayed within its theoretical
+Parse reliability was high across the grid: 5 parse failures total (4 from
+deepseek, 1 from nemotron) out of tens of thousands of LLM turns, with per-model
+rates at or below 0.19% in every condition (Table 2). The market maker's subsidy stayed within its theoretical
 worst-case bound: the maximum per-question subsidy observed was 27.726, just
 under the `b·ln 2 ≈ 27.73` ceiling at `b = 40` (Table 2). Accuracy-per-dollar
 figures are in Table 1; because absolute spends are tiny and some arms ran on a
@@ -334,8 +340,9 @@ the pools while posterior gap does not — the market overcommits.
 Second, **herding on shared errors**. When agents' errors are correlated,
 trading lets them reinforce a common mistake: a price that already reflects the
 shared bias invites more trades in the same direction. The phase map (§4.3) is
-consistent with this — the market's deficit is largest for the higher-ρ
-homogeneous teams and turns negative only for the low-ρ mixed team. A static
+weakly consistent with this — the only condition whose market deficit ever turns
+negative is the low-ρ mixed team C, though the tendency is loose (the lowest-ρ
+homogeneous team, deepseek pool A, still runs a deficit on every seed). A static
 pool cannot amplify a shared error the way a sequential price can, because it
 never shows one agent another agent's move.
 
