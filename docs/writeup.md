@@ -405,8 +405,8 @@ no better than flash's: the pro − flash pool-gap difference is 0.010
 anything nominally worse. Yet pro's *market* gap is lower than flash's by
 Δ = −0.044 [−0.098, 0.008] (p = 0.127). Because pro shares flash's model family
 its knowledge is held roughly fixed, and the improvement surfaces only once the
-market runs — so the deficit fix is attributable to how the capable model
-*trades*, not to what it *knows*.
+market runs — so the deficit fix points to how the capable model *trades*, not
+to what it *knows*.
 
 **Claim 3 — capability matters independently of ρ.** One could instead explain
 the fix through error correlation — lower ρ, less herding, smaller deficit. But
@@ -423,8 +423,9 @@ belief on its own Pass-1 belief (b1) and the pre-trade price (b2) — offers a
 consistent, if modest, mechanism. The pooled price-weight coefficient b2 is
 0.045 [0.028, 0.060] for flash, 0.010 [−0.000, 0.021] for pro, and
 0.023 [0.011, 0.036] for luna: flash's traders weight the running price
-significantly more than either capable tier's (mean belief drift |y − x1| is
-0.037 for flash vs. 0.012 for pro), while own-information weight b1 stays near 1
+more than either capable tier's (clearly so versus pro; the flash–luna
+difference is smaller and the CIs overlap), with mean belief drift |y − x1| of
+0.037 for flash vs. 0.012 for pro, while own-information weight b1 stays near 1
 in every tier. This is **descriptive and the effect is small** — all three
 coefficients are modest and the pro-vs-luna ordering is not distinguishable
 (overlapping CIs) — so it is supporting evidence for the herding interpretation
