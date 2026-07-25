@@ -13,7 +13,9 @@ On the main grid, the market's final price (posterior gap 0.269 ± 0.012) is
 **farther** from the Bayes-optimal posterior than every static pool built from
 the same agents' independently elicited beliefs — including the best of the
 four, the median pool (gap 0.187). This is a reversal of the naive
-expectation, and it is the headline result of the paper.
+expectation, and it is the headline result of the paper. A later
+capability-axis extension (v2) refines it: the deficit shrinks to parity as
+trader capability rises, and no tested tier's market beats its own pool.
 
 ## What this is
 
@@ -56,6 +58,22 @@ logs rather than re-eliciting them, so that source must exist first: `D_k*`
 reads from `C`, `W_*` reads from `A`. The released `data/main/` already
 contains both, so a fresh clone can run any condition standalone.
 
+The v2 capability extension is released in-repo under `data/v2/`. Regenerate
+its tables and figures (`tiers.md`, `herding.md`, `fig3`, `fig2_v2`) with no API
+calls:
+
+```bash
+python -m pnyx.cli analyze-v2 --flash data/main/A --pro data/v2/A_PRO --luna data/v2/A_LUNA --out analysis_out/v2
+```
+
+Rerunning the two v2 tiers from scratch (about $3.06, needs `OPENROUTER_KEY`)
+uses the configs under `pnyx/configs/v2/`:
+
+```bash
+python -m pnyx.cli run --config pnyx/configs/v2/A_PRO.yaml
+python -m pnyx.cli run --config pnyx/configs/v2/A_LUNA.yaml
+```
+
 Run the test suite:
 
 ```bash
@@ -76,9 +94,38 @@ replay test.
 | H-wealth — persistent bankroll | **Slightly hurts.** Posterior gap worsens vs. per-question reset (Δ≈0.05–0.06, p≈0.03); no order-dependence (fixed vs. shuffled, p=0.74). |
 
 Reliability: 5 parse failures across the whole main grid (tens of thousands
-of LLM turns, ≤0.19% per model per condition — Table 2). Total experiment
-cost was $0.73 across all ledgers, including pilots not released here; the
-released main grid alone cost $0.7255.
+of LLM turns, ≤0.19% per model per condition — Table 2).
+
+### Capability axis (v2 extension)
+
+An exploratory, **not pre-registered** extension (run after the initial
+release) re-runs condition A's two-pass protocol on the same 40 questions × 3
+seeds across three homogeneous trader tiers — `flash` (condition A,
+deepseek-v4-flash), `pro` (deepseek-v4-pro, a *same-family* knowledge-vs-trading
+control), and `luna` (gpt-5.6-luna). Deficit = market gap − mean-pool gap
+(positive ⇒ the market destroys information):
+
+| Tier | Pool gap | Market gap | Deficit (market − pool) | Team ρ |
+|---|---|---|---|---|
+| flash | 0.218 | 0.269 | 0.051 [−0.001, 0.100] (p=0.080) | 0.398 ± 0.018 |
+| pro | 0.227 | 0.224 | −0.003 [−0.048, 0.041] (p=0.377) | 0.378 ± 0.029 |
+| luna | 0.191 | 0.192 | 0.002 [−0.046, 0.050] (p=0.451) | 0.283 ± 0.005 |
+
+The deficit reaches **parity, not superiority**: at both capable tiers it
+straddles zero, but no tier's market beats its own pool. Pro's pool is no
+better than flash's (pool-gap difference 0.010 [−0.011, 0.030], p=0.289) while
+its market gap improves (−0.044 [−0.098, 0.008] vs. flash), so the fix is
+trading skill, not knowledge — and pro's ρ (0.378) matches flash's (0.398), so
+capability acts independently of error correlation. A herding regression
+(descriptive) shows flash weighting the running price more than either capable
+tier (price-weight b2 = 0.045 [0.028, 0.060] vs. pro 0.010 [−0.000, 0.021],
+luna 0.023 [0.011, 0.036]). See
+[`analysis_out/v2/`](analysis_out/v2/) (`tiers.md`, `herding.md`, `fig3.png`,
+`fig2_v2.png`) and [`docs/writeup.md` §6](docs/writeup.md).
+
+Cost: the v1 main experiment cost $0.73 across all ledgers (released main grid
+$0.7255, pilots not released here); the v2 extension added $3.06 ($0.45 A_PRO +
+$2.61 A_LUNA), for **$3.79 total**.
 
 ## Repo map
 
@@ -103,8 +150,9 @@ tests/              # pytest suite (366 tests)
 ```
 
 Limitations — thin markets, the narrow achieved ρ range, prompt/liquidity
-sensitivity, synthetic prose rendering, and the single environment family —
-are discussed in full in [`docs/writeup.md`](docs/writeup.md#6-limitations).
+sensitivity, synthetic prose rendering, the single environment family, and the
+exploratory capability axis — are discussed in full in
+[`docs/writeup.md`](docs/writeup.md#7-limitations).
 
 ## Citing this work
 

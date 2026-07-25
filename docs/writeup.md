@@ -18,7 +18,11 @@ diversity direction from prior monoculture work). An adversary instructed to
 push the wrong side moves prices and degrades accuracy, but loses money at every
 bankroll multiple — the market taxes manipulation even as some final
 predictions flip. Persistent wealth across questions slightly worsens accuracy.
-Total experiment cost: $0.73.
+An exploratory extension along a model-capability axis — added after the initial
+release and not pre-registered — finds this deficit shrinks to parity as trader
+capability rises, with no tested tier's market beating its own independent pool,
+and a same-family control shows the change is trading skill rather than added
+knowledge. The main experiment cost $0.73; the capability extension added $3.06.
 
 ## 1. Introduction and positioning
 
@@ -355,7 +359,88 @@ where this mechanism is most acute.
 None of these is established as *the* cause; they are the interpretations most
 consistent with the measured pattern, offered to structure follow-up work.
 
-## 6. Limitations
+## 6. Extension: the capability axis
+
+This section is an **exploratory extension**, run on 2026-07-24 after the initial
+release and **not part of the pre-registration**: the hypotheses here were formed
+after we saw the v1 reversal, and we report them as post-hoc.
+
+**Motivation.** The reversal of §4.1 was measured on one trader model
+(`deepseek/deepseek-v4-flash`, "flash"). A natural worry is that it is an
+artifact of a *cheap* model — perhaps a weak trader mishandles prices and
+destroys information that a more capable trader would preserve. We test that by
+re-running condition A's two-pass protocol on the same 40 questions × 3 seeds
+with two more capable homogeneous tiers.
+
+**Design.** Three homogeneous tiers, identical questions, seeds, personas, and
+`b = 40`: **flash** (condition A), **pro** (`A_PRO`, `deepseek-v4-pro`), and
+**luna** (`A_LUNA`, `gpt-5.6-luna`). Pro is the key control — it is the *same
+model family* as flash, so it holds model knowledge roughly fixed while raising
+capability, and any change it produces on the market side is trading skill, not
+new knowledge. Luna is a stronger frontier model from a different vendor. Each
+tier's pool gap, market gap, and deficit (market gap − mean-pool gap, positive ⇒
+the market destroys information) are computed exactly as in §4. The extension
+cost $3.06 ($0.45 for A_PRO, $2.61 for A_LUNA).
+
+| Tier | Pool gap | Market gap | Deficit (market − pool) | Market Brier | Team ρ |
+|---|---|---|---|---|---|
+| flash | 0.218 | 0.269 | 0.051 [−0.001, 0.100] (p = 0.080) | 0.281 | 0.398 ± 0.018 |
+| pro | 0.227 | 0.224 | −0.003 [−0.048, 0.041] (p = 0.377) | 0.215 | 0.378 ± 0.029 |
+| luna | 0.191 | 0.192 | 0.002 [−0.046, 0.050] (p = 0.451) | 0.201 | 0.283 ± 0.005 |
+
+(n = 120 per tier; deficit CIs are 95% bootstrap, p from Wilcoxon signed-rank.)
+
+**Claim 1 — the deficit reaches parity, not superiority.** Flash's market runs a
+deficit of 0.051 [−0.001, 0.100] (p = 0.080) against its own pool. At both
+capable tiers the deficit vanishes — pro −0.003 [−0.048, 0.041] (p = 0.377) and
+luna 0.002 [−0.046, 0.050] (p = 0.451), CIs straddling zero — so a more capable
+trader **stops destroying information**. But it does not go past parity: no
+tier's market beats its own pool, and the pro and luna market gaps (0.224, 0.192)
+sit essentially on top of their pool gaps (0.227, 0.191). The capable-market
+story is parity, not superiority.
+
+**Claim 2 — the fix is trading skill, not knowledge.** Pro's independent pool is
+no better than flash's: the pro − flash pool-gap difference is 0.010
+[−0.011, 0.030] (Wilcoxon p = 0.289), indistinguishable from zero and if
+anything nominally worse. Yet pro's *market* gap is lower than flash's by
+Δ = −0.044 [−0.098, 0.008] (p = 0.127). Because pro shares flash's model family
+its knowledge is held roughly fixed, and the improvement surfaces only once the
+market runs — so the deficit fix is attributable to how the capable model
+*trades*, not to what it *knows*.
+
+**Claim 3 — capability matters independently of ρ.** One could instead explain
+the fix through error correlation — lower ρ, less herding, smaller deficit. But
+pro's team ρ (0.378 ± 0.029) is statistically indistinguishable from flash's
+(0.398 ± 0.018) while their deficit outcomes are opposite, so capability moves
+the market-vs-pool gap through a channel other than measured ρ. Luna does
+confound capability with lower correlation (ρ = 0.283 ± 0.005, and its pool is
+also the strongest — luna − flash pool gap −0.027 [−0.050, −0.004], p = 0.000),
+but the same-family pro control isolates capability from ρ.
+
+**Mechanism (supporting, descriptive).** The herding regression — §3's
+sanctioned dynamics-only analysis, regressing each agent's stated in-market
+belief on its own Pass-1 belief (b1) and the pre-trade price (b2) — offers a
+consistent, if modest, mechanism. The pooled price-weight coefficient b2 is
+0.045 [0.028, 0.060] for flash, 0.010 [−0.000, 0.021] for pro, and
+0.023 [0.011, 0.036] for luna: flash's traders weight the running price
+significantly more than either capable tier's (mean belief drift |y − x1| is
+0.037 for flash vs. 0.012 for pro), while own-information weight b1 stays near 1
+in every tier. This is **descriptive and the effect is small** — all three
+coefficients are modest and the pro-vs-luna ordering is not distinguishable
+(overlapping CIs) — so it is supporting evidence for the herding interpretation
+of §5, not proof.
+
+Fig 2-v2 (`analysis_out/v2/fig2_v2.png`) shows the phase map of §4.3 with pro and
+luna added; Fig 3 (`analysis_out/v2/fig3.png`) shows the per-tier deficit and the
+price-weight b2 by tier and round. The full tier and herding tables live in
+`analysis_out/v2/tiers.md` and `herding.md`, regenerated with:
+
+```
+python -m pnyx.cli analyze-v2 --flash data/main/A --pro data/v2/A_PRO \
+    --luna data/v2/A_LUNA --out analysis_out/v2
+```
+
+## 7. Limitations
 
 We restate the binding caveats and add the design-scope ones.
 
@@ -377,6 +462,13 @@ We restate the binding caveats and add the design-scope ones.
 6. **Single environment family.** Everything here is a binary latent state with
    six conditionally independent signals under a uniform prior; other signal
    structures, priors, or outcome cardinalities are untested (§2).
+7. **The capability axis is exploratory and thin.** The §6 extension was not
+   pre-registered — its hypotheses were formed after the v1 reversal — and it
+   adds only two tiers. Luna is the single non-deepseek frontier vendor tested,
+   so cross-vendor capability rests on one model; and luna confounds capability
+   with lower error correlation, a confound the same-family pro control mitigates
+   but does not remove. All three tiers ran on the same 40-question environment
+   (§2), so the parity finding inherits every environment caveat above.
 
 Two further points. The static baselines had access to *exactly the same
 information* as the market — that equality is the design, and it means the
@@ -387,7 +479,7 @@ generalizes beyond it. Peer prediction — which could in principle distinguish
 genuine private information from correlated agreement — is deliberately out of
 scope for this version (arXiv:2601.20299) and left to a sequel.
 
-## 7. Reproducibility
+## 8. Reproducibility
 
 The pre-registration in SPEC.md fixes the hypotheses and the two-pass
 elicitation protocol before any main run. The P4 event logs are released under
@@ -404,7 +496,7 @@ under a fixed bootstrap seed, so the CIs and p-values above are reproducible
 exactly. Rerunning the experiments from scratch requires an OpenRouter key and
 costs about $0.75 in total; the analysis of the released logs costs nothing.
 
-## 8. Conclusion
+## 9. Conclusion
 
 In a controlled environment where the right answer is known exactly, LMSR
 market trading among a small pool of LLM agents recovers *less* of the
@@ -414,14 +506,18 @@ our help/nothing/hurt map. The market helps in only one measured corner: a
 low-correlation, quality-matched mixed team. Model diversity helps as prior
 work found (a replication, not a new claim), adversarial capital moves prices
 and degrades accuracy but is always taxed at settlement, and wealth persistence
-hurts slightly. The value of the design is not any one of these numbers but the
+hurts slightly. A post-hoc capability extension refines the reversal rather than
+overturning it: cheap traders make LMSR destroy information, more capable
+traders — including a same-family control that isolates trading skill from
+knowledge — pull the market back to parity with the pool, and no tested tier's
+market beats independent pooling. The value of the design is not any one of these numbers but the
 separation that produced them: mechanism, model knowledge, and signal structure
 pulled apart against an exact oracle, so that "the market helped" can be
 checked rather than assumed. The interpretation of *why* the market hurts here
 — overcommitment, herding on shared errors, thin-market path-dependence — is
 offered as structure for follow-up, not as settled fact.
 
-## 9. References
+## 10. References
 
 - Hanson, R. (2003). Combinatorial information market design. *Information
   Systems Frontiers*. (LMSR.)
