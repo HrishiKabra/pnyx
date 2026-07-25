@@ -64,7 +64,7 @@ import sys
 from pathlib import Path
 
 from pnyx import dataset
-from pnyx.analysis import figures, manipulation
+from pnyx.analysis import capability, figures, manipulation
 from pnyx.analysis import mainrun as mainrun_analysis
 from pnyx.analysis import pilot as pilot_analysis
 from pnyx.analysis import tables as tables_analysis
@@ -129,6 +129,21 @@ def _build_parser() -> argparse.ArgumentParser:
                                 help="output directory for figures/tables/stats.md")
     analyze_main_p.add_argument("--bootstrap-seed", type=int, default=0,
                                 help="seed threaded into every paired bootstrap (determinism)")
+
+    analyze_v2_p = sub.add_parser(
+        "analyze-v2",
+        help="capability-tier + herding analysis -> tiers.md, herding.md, fig2_v2, fig3",
+    )
+    analyze_v2_p.add_argument("--flash", required=True,
+                              help="flash tier condition dir (condition A), e.g. data/main/A")
+    analyze_v2_p.add_argument("--pro", required=True,
+                              help="pro tier condition dir, e.g. data/v2/A_PRO")
+    analyze_v2_p.add_argument("--luna", required=True,
+                              help="luna tier condition dir, e.g. data/v2/A_LUNA")
+    analyze_v2_p.add_argument("--out", required=True,
+                              help="output directory for tiers.md/herding.md/figures")
+    analyze_v2_p.add_argument("--bootstrap-seed", type=int, default=0,
+                              help="seed threaded into every paired/cluster bootstrap")
 
     return parser
 
@@ -326,6 +341,85 @@ def _cmd_analyze_main(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# analyze-v2 (capability axis + herding decomposition)
+# ---------------------------------------------------------------------------
+
+# v2 phase-map conditions: the P5 arms (loaded from the flash dir's parent when
+# present) plus the two new capability tiers, mapped to their figure keys.
+_V2_PHASE_MAP_SIBLINGS: tuple[str, ...] = ("B1", "B3", "C")
+_V2_HERDING_N_BOOT = 2_000
+_V2_TIER_N_BOOT = 10_000
+
+
+def _cmd_analyze_v2(args) -> int:
+    flash_dir = Path(args.flash)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seed = args.bootstrap_seed
+
+    conds = {
+        "flash": mainrun_analysis.load_condition(flash_dir),
+        "pro": mainrun_analysis.load_condition(Path(args.pro)),
+        "luna": mainrun_analysis.load_condition(Path(args.luna)),
+    }
+
+    tiers_df = capability.tier_metrics(
+        conds, n_boot=_V2_TIER_N_BOOT, bootstrap_seed=seed
+    )
+    (out_dir / "tiers.md").write_text(
+        capability.render_tiers_md(conds, n_boot=_V2_TIER_N_BOOT, bootstrap_seed=seed)
+    )
+
+    herding_by_tier = {
+        tier: capability.herding_weights(cond, n_boot=_V2_HERDING_N_BOOT, seed=seed)
+        for tier, cond in conds.items()
+    }
+    (out_dir / "herding.md").write_text(
+        capability.render_herding_md(herding_by_tier)
+    )
+
+    figures.fig3(tiers_df, herding_by_tier, out_dir)
+
+    # fig2_v2: the P5 phase map (condition A + any B1/B3/C siblings of the
+    # flash dir) regenerated with the two new capability tiers added.
+    phase_conds = {flash_dir.name: conds["flash"]}
+    for name in _V2_PHASE_MAP_SIBLINGS:
+        sibling = flash_dir.parent / name
+        if sibling.exists():
+            phase_conds[name] = mainrun_analysis.load_condition(sibling)
+    phase_conds["A_PRO"] = conds["pro"]
+    phase_conds["A_LUNA"] = conds["luna"]
+
+    rho_by_cond = {
+        name: mainrun_analysis.team_rho_summary(cond)
+        for name, cond in phase_conds.items()
+    }
+    gapdiff_by_cond = {
+        name: mainrun_analysis.question_metrics(cond, None)
+        for name, cond in phase_conds.items()
+    }
+    figures.fig2_v2(rho_by_cond, gapdiff_by_cond, out_dir)
+
+    print("=== Pnyx v2 capability-tier summary ===")
+    for _i, row in tiers_df.iterrows():
+        print(
+            f"{row['tier']:>5}: market gap {row['market_gap']:.3f}, "
+            f"pool gap {row['pool_gap']:.3f}, deficit {row['deficit']:+.3f} "
+            f"(Wilcoxon p = {row['deficit_p']:.3f}), ρ = {row['rho_mean']:.3f}"
+        )
+    for tier, hw in herding_by_tier.items():
+        pooled = hw[hw["scope"] == "pooled"].iloc[0]
+        print(
+            f"{tier:>5}: herding b2 (price weight) pooled = {pooled['b2']:.3f} "
+            f"[{pooled['b2_lo']:.3f}, {pooled['b2_hi']:.3f}]"
+        )
+    print(
+        f"Wrote tiers.md, herding.md, fig3.png/pdf, fig2_v2.png/pdf -> {out_dir}"
+    )
+    return 0
+
+
 _DISPATCH = {
     "run": _cmd_run,
     "status": _cmd_status,
@@ -334,6 +428,7 @@ _DISPATCH = {
     "verify-report": _cmd_verify_report,
     "analyze-pilot": _cmd_analyze_pilot,
     "analyze-main": _cmd_analyze_main,
+    "analyze-v2": _cmd_analyze_v2,
 }
 
 

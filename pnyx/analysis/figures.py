@@ -63,7 +63,10 @@ import pandas as pd
 
 from pnyx.analysis.mainrun import RhoSummary, compare
 
-__all__ = ["fig1_data", "fig1", "fig2_data", "fig2"]
+__all__ = [
+    "fig1_data", "fig1", "fig2_data", "fig2", "fig2_v2",
+    "fig3_data", "fig3",
+]
 
 # ---------------------------------------------------------------------------
 # Palette + layout constants
@@ -79,8 +82,17 @@ _CONDITION_COLOR: dict[str, str] = {
     "B1": "#E69F00",
     "B3": "#009E73",
     "C": "#CC79A7",
+    # v2 capability tiers added to the phase map (fig2_v2). The two remaining
+    # Okabe-Ito hues, each with its own marker shape (v/P) so the 6-condition
+    # palette stays distinguishable even where two hues land in the 6-8 CVD
+    # band — marker shape + direct labels are the required secondary encoding
+    # (same discipline as P5's #CC79A7/#009E73 pair).
+    "A_PRO": "#56B4E9",
+    "A_LUNA": "#D55E00",
 }
-_CONDITION_MARKER: dict[str, str] = {"A": "o", "B1": "s", "B3": "^", "C": "D"}
+_CONDITION_MARKER: dict[str, str] = {
+    "A": "o", "B1": "s", "B3": "^", "C": "D", "A_PRO": "v", "A_LUNA": "P",
+}
 
 # Muted gray-blue tints for Fig 1's static pools: same desaturated hue
 # family, increasing lightness, deliberately low-saturation relative to
@@ -277,6 +289,47 @@ def fig1(metrics_a: pd.DataFrame, out: str | Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _phase_map_data(
+    rho_by_cond: dict[str, RhoSummary],
+    gapdiff_by_cond: dict[str, pd.DataFrame],
+) -> dict[str, dict[str, list]]:
+    """Per-condition ``{"seeds", "rho", "gapdiff"}`` for the phase map — the
+    ONE implementation of the phase-map data path, shared by ``fig2_data``
+    (Fig 2(a)) and ``fig2_v2`` (the v2 regeneration with the capability
+    tiers added). Per condition, per seed, the y-value is
+    ``mean(market_gap) - mean(mean_gap)`` over that (condition, seed)'s rows.
+
+    Raises ``ValueError`` if ``rho_by_cond`` and ``gapdiff_by_cond`` don't
+    share the same condition keys, or if a condition's rho seeds and gapdiff
+    seeds don't match — either is a data-alignment bug that would silently
+    plot mismatched (rho, gapdiff) pairs."""
+    if set(rho_by_cond) != set(gapdiff_by_cond):
+        raise ValueError(
+            "phase map: rho_by_cond and gapdiff_by_cond must have the same "
+            f"condition keys; got {sorted(rho_by_cond)} vs {sorted(gapdiff_by_cond)}"
+        )
+    phase_map: dict[str, dict[str, list]] = {}
+    for cond, rho_summary in rho_by_cond.items():
+        rho_by_seed = rho_summary.per_seed_mean
+        gdf = gapdiff_by_cond[cond]
+        diff = gdf["market_gap"] - gdf["mean_gap"]
+        gapdiff_by_seed = {
+            int(s): float(v) for s, v in diff.groupby(gdf["seed"]).mean().items()
+        }
+        if set(rho_by_seed) != set(gapdiff_by_seed):
+            raise ValueError(
+                f"phase map: condition {cond!r} has mismatched seed sets between "
+                f"rho ({sorted(rho_by_seed)}) and gapdiff ({sorted(gapdiff_by_seed)})"
+            )
+        seeds = sorted(rho_by_seed)
+        phase_map[cond] = {
+            "seeds": seeds,
+            "rho": [rho_by_seed[s] for s in seeds],
+            "gapdiff": [gapdiff_by_seed[s] for s in seeds],
+        }
+    return phase_map
+
+
 def fig2_data(
     rho_by_cond: dict[str, RhoSummary],
     gapdiff_by_cond: dict[str, pd.DataFrame],
@@ -302,31 +355,7 @@ def fig2_data(
     gapdiff seeds don't match — either is a data-alignment bug that would
     silently plot mismatched (rho, gapdiff) pairs.
     """
-    if set(rho_by_cond) != set(gapdiff_by_cond):
-        raise ValueError(
-            "fig2_data: rho_by_cond and gapdiff_by_cond must have the same "
-            f"condition keys; got {sorted(rho_by_cond)} vs {sorted(gapdiff_by_cond)}"
-        )
-
-    phase_map: dict[str, dict[str, list]] = {}
-    for cond, rho_summary in rho_by_cond.items():
-        rho_by_seed = rho_summary.per_seed_mean
-        gdf = gapdiff_by_cond[cond]
-        diff = gdf["market_gap"] - gdf["mean_gap"]
-        gapdiff_by_seed = {
-            int(s): float(v) for s, v in diff.groupby(gdf["seed"]).mean().items()
-        }
-        if set(rho_by_seed) != set(gapdiff_by_seed):
-            raise ValueError(
-                f"fig2_data: condition {cond!r} has mismatched seed sets between "
-                f"rho ({sorted(rho_by_seed)}) and gapdiff ({sorted(gapdiff_by_seed)})"
-            )
-        seeds = sorted(rho_by_seed)
-        phase_map[cond] = {
-            "seeds": seeds,
-            "rho": [rho_by_seed[s] for s in seeds],
-            "gapdiff": [gapdiff_by_seed[s] for s in seeds],
-        }
+    phase_map = _phase_map_data(rho_by_cond, gapdiff_by_cond)
 
     adv_sorted = adv_summary.sort_values("k")
     manipulation = {
@@ -517,4 +546,179 @@ def fig2(
     fig.tight_layout()
     fig.savefig(out / "fig2.png", dpi=300, bbox_inches="tight")
     fig.savefig(out / "fig2.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Fig 2 v2 — the P5 phase map regenerated with the capability tiers added
+# ---------------------------------------------------------------------------
+
+
+def fig2_v2(
+    rho_by_cond: dict[str, RhoSummary],
+    gapdiff_by_cond: dict[str, pd.DataFrame],
+    out: str | Path,
+) -> None:
+    """The P5 phase map (Fig 2(a)) regenerated as a standalone figure with the
+    v2 capability tiers ``A_PRO``/``A_LUNA`` added as two new conditions
+    (Okabe-Ito #56B4E9/#D55E00, marker shapes v/P). Reuses the SINGLE
+    phase-map data path (``_phase_map_data``) and the SINGLE phase-map drawing
+    routine (``_plot_phase_map``) — no second copy of either. Saves
+    ``fig2_v2.png`` (300 dpi) and ``fig2_v2.pdf`` under ``out``.
+
+    The story this panel carries: the two new tiers sit at different ρ from
+    condition A but with markedly different ``market_gap − mean_gap`` — the
+    "capability matters independently of ρ" evidence."""
+    phase_map = _phase_map_data(rho_by_cond, gapdiff_by_cond)
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(1, 1, figsize=(6.5, 4.5))
+    _plot_phase_map(ax, phase_map)
+
+    fig.tight_layout()
+    fig.savefig(out / "fig2_v2.png", dpi=300, bbox_inches="tight")
+    fig.savefig(out / "fig2_v2.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Fig 3 — (a) market deficit per tier, (b) price weight b2 per tier per round
+# ---------------------------------------------------------------------------
+
+# One fixed color per capability tier for Fig 3, reusing each tier's phase-map
+# hue so a tier reads the same across every v2 figure (A=flash blue, A_PRO
+# light-blue, A_LUNA vermillion).
+_TIER_COLOR: dict[str, str] = {
+    "flash": _CONDITION_COLOR["A"],
+    "pro": _CONDITION_COLOR["A_PRO"],
+    "luna": _CONDITION_COLOR["A_LUNA"],
+}
+_TIER_MARKER: dict[str, str] = {
+    "flash": _CONDITION_MARKER["A"],
+    "pro": _CONDITION_MARKER["A_PRO"],
+    "luna": _CONDITION_MARKER["A_LUNA"],
+}
+
+
+def fig3_data(
+    tiers_df: pd.DataFrame,
+    herding_by_tier: dict[str, pd.DataFrame],
+) -> dict[str, Any]:
+    """Pure data-prep for Fig 3.
+
+    ``tiers_df`` is ``capability.tier_metrics``'s output (one row per tier,
+    with ``deficit`` and its within-tier bootstrap CI ``deficit_ci_lo`` /
+    ``deficit_ci_hi``); ``herding_by_tier`` maps each tier to its
+    ``capability.herding_weights`` DataFrame. Returns:
+
+    * ``deficit`` — ``{"tiers", "value", "lo", "hi"}`` for panel (a): the
+      per-tier market deficit with its bootstrap CI as asymmetric error-bar
+      magnitudes (``value − lo`` / ``hi − value``);
+    * ``price_weight`` — ``{tier: {"rounds", "b2", "lo", "hi"}}`` for panel
+      (b): the per-round price coefficient ``b2`` and its cluster-bootstrap
+      CI (scopes "1"/"2"/"3" only; the pooled row is table-only).
+    """
+    tiers = list(tiers_df["tier"])
+    value = [float(v) for v in tiers_df["deficit"]]
+    lo = [float(v) for v in tiers_df["deficit_ci_lo"]]
+    hi = [float(v) for v in tiers_df["deficit_ci_hi"]]
+    deficit = {
+        "tiers": tiers,
+        "value": value,
+        "lo": lo,
+        "hi": hi,
+        "err_low": [v - l for v, l in zip(value, lo)],
+        "err_high": [h - v for v, h in zip(value, hi)],
+    }
+
+    price_weight: dict[str, dict[str, list]] = {}
+    for tier in tiers:
+        hw = herding_by_tier[tier]
+        per_round = hw[hw["scope"].isin(["1", "2", "3"])].copy()
+        per_round = per_round.sort_values("scope")
+        rounds = [int(s) for s in per_round["scope"]]
+        b2 = [float(v) for v in per_round["b2"]]
+        lo_r = [float(v) for v in per_round["b2_lo"]]
+        hi_r = [float(v) for v in per_round["b2_hi"]]
+        price_weight[tier] = {
+            "rounds": rounds,
+            "b2": b2,
+            "lo": lo_r,
+            "hi": hi_r,
+            "err_low": [v - l for v, l in zip(b2, lo_r)],
+            "err_high": [h - v for v, h in zip(b2, hi_r)],
+        }
+    return {"deficit": deficit, "price_weight": price_weight}
+
+
+def _plot_deficit_panel(ax, deficit: dict[str, list]) -> None:
+    tiers = deficit["tiers"]
+    x = np.arange(len(tiers))
+    ax.axhline(0.0, color="#999999", linestyle="--", linewidth=1, zorder=1)
+    colors = [_TIER_COLOR.get(t, MARKET_COLOR) for t in tiers]
+    ax.bar(
+        x, deficit["value"],
+        yerr=[deficit["err_low"], deficit["err_high"]],
+        color=colors, capsize=4, edgecolor=_TEXT_COLOR, linewidth=0.6,
+        ecolor=_TEXT_COLOR, error_kw={"elinewidth": 1.0}, zorder=2,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(tiers)
+    ax.set_ylabel("Market deficit  (market_gap − mean_pool_gap)")
+    ax.text(
+        0.02, 0.02, "market helps (below 0)", transform=ax.transAxes,
+        ha="left", va="bottom", fontsize=8, color=_TEXT_COLOR,
+    )
+    _style_axis(ax)
+
+
+def _plot_price_weight_panel(ax, price_weight: dict[str, dict[str, list]]) -> None:
+    for tier, d in price_weight.items():
+        color = _TIER_COLOR.get(tier, MARKET_COLOR)
+        marker = _TIER_MARKER.get(tier, "o")
+        ax.errorbar(
+            d["rounds"], d["b2"],
+            yerr=[d["err_low"], d["err_high"]],
+            color=color, marker=marker, markersize=7, linewidth=1.5,
+            capsize=3, elinewidth=1.0, label=tier,
+            markeredgecolor=_TEXT_COLOR, markeredgewidth=0.4, zorder=3,
+        )
+        # Direct label at the last round (near-black, never series color).
+        ax.annotate(
+            tier, (d["rounds"][-1], d["b2"][-1]), textcoords="offset points",
+            xytext=(6, 0), fontsize=8, color=_TEXT_COLOR, va="center",
+        )
+    ax.set_xticks([1, 2, 3])
+    ax.set_xticklabels(["1", "2", "3"])
+    ax.set_xlabel("Market round")
+    ax.set_ylabel("Price weight b₂  (herding on the price)")
+    _style_axis(ax)
+
+
+def fig3(
+    tiers_df: pd.DataFrame,
+    herding_by_tier: dict[str, pd.DataFrame],
+    out: str | Path,
+) -> None:
+    """Fig 3 — (a) market deficit per capability tier with its within-tier
+    bootstrap CI as error bars and a zero line ("market helps" below);
+    (b) the herding price-weight ``b2`` per tier per market round (three
+    grouped, CI-whiskered lines, one per tier) on a single y-axis. Saves
+    ``fig3.png`` (300 dpi) and ``fig3.pdf`` under ``out``."""
+    data = fig3_data(tiers_df, herding_by_tier)
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(1, 2, figsize=_FIGSIZE)
+
+    _plot_deficit_panel(axes[0], data["deficit"])
+    _panel_letter(axes[0], "a")
+
+    _plot_price_weight_panel(axes[1], data["price_weight"])
+    _panel_letter(axes[1], "b")
+
+    fig.tight_layout()
+    fig.savefig(out / "fig3.png", dpi=300, bbox_inches="tight")
+    fig.savefig(out / "fig3.pdf", bbox_inches="tight")
     plt.close(fig)
