@@ -125,3 +125,9 @@ data/pilot_b80_pv3  PILOT_B80_PV3  10/10    0.0000      0.2681      0.2024      
   cost by model:
     deepseek/deepseek-v4-flash: $0.0098
 ```
+
+## v2 — capability axis (2026-07-24, post-ship extension)
+
+- New conditions A_PRO (6× deepseek-v4-pro, $0.45) and A_LUNA (6× gpt-5.6-luna, $2.61), full two-pass, same 40 questions × 3 seeds; data under data/v2/ (not yet released). Parse-fails: 1/6000.
+- Results: market deficit vs mean pool — flash +0.051 (p=.080) / pro −0.003 (p=.377) / luna +0.002 (p=.451). Luna market vs flash market paired: −0.076, p=.001. Pro pool gap ≈ flash pool gap (Δ+0.010, p=.29) → deficit fix is TRADING skill, not knowledge (same-family control). Luna pool better (−0.027, p=.0003) and team ρ=0.283 (below all v1 teams); pro ρ=0.378 ≈ flash's 0.398 with opposite market outcome → capability matters independently of ρ.
+- Revised headline: cheap traders make LMSR destroy information; capable traders reach parity with static pooling; NO tier beats the pool in this regime.
