@@ -9,6 +9,7 @@ CLAUDE.md
 # figures/tables from a fresh clone; pilots and scratch runs stay ignored.
 data/*
 !data/main/
+!data/v2/
 data/main/**/*.pre-repair-backup
 
 # P2 dataset scratch (build/render/verify staging); the committed dataset lives
