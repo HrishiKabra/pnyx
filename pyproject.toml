@@ -16,6 +16,9 @@ dependencies = [
 dev = [
     "pytest",
 ]
+replay = [
+    "streamlit",
+]
 
 [build-system]
 requires = ["hatchling"]
