@@ -1,0 +1,3 @@
+# Exists only for Streamlit Community Cloud, which requires a requirements.txt
+# at the repo root. Real dependency list lives in pyproject.toml.
+-e .[replay]

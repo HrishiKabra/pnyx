@@ -170,6 +170,10 @@ panel (each honest agent's own Pass-1 belief vs. its in-market stated belief
 vs. the price it faced, by round). Every number is served by the tested,
 Streamlit-free data layer `pnyx.analysis.replay`.
 
+![A D_K10 replay: the adversary (red) trades against the honest pool (blue), pushing the price away from the Bayes-optimal posterior (dashed green).](docs/assets/replay_adversary.gif)
+
+*A D_K10 replay: the 10×-bankroll adversary (red) pushes the price away from the Bayes-optimal line — regenerate with `python scripts/replay_gif.py`.*
+
 ```bash
 pip install -e ".[replay]"
 streamlit run replay/streamlit_app.py
