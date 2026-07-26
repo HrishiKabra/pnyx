@@ -39,6 +39,10 @@ Full write-up: [`docs/writeup.md`](docs/writeup.md). Pre-registered
 hypotheses and protocol: [`SPEC.md`](SPEC.md). arXiv-style PDF:
 [`paper/pnyx.pdf`](paper/pnyx.pdf) (build it yourself with `bash paper/build.sh`).
 
+**▶ Live demo:** replay any market question — price paths, adversary attacks,
+herding — at [hrishikabra-pnyx.streamlit.app](https://hrishikabra-pnyx.streamlit.app/)
+(free-tier hosting; give it ~30s to wake if it's been idle).
+
 ## Reproduce the paper
 
 Regenerate every figure, table, and statistic from the released event logs —
@@ -161,6 +165,8 @@ exploratory capability axis — are discussed in full in
 [`docs/writeup.md`](docs/writeup.md#7-limitations).
 
 ## Replay UI
+
+**Hosted instance:** [hrishikabra-pnyx.streamlit.app](https://hrishikabra-pnyx.streamlit.app/) — no install needed.
 
 An optional Streamlit app replays a single settled question live: the LMSR
 price path against the Bayes-posterior oracle (with shaded round boundaries
