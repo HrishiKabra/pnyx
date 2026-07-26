@@ -9,7 +9,7 @@
 | P2 — Environment rendering | ✅ done (2026-07-13) | 40+10 questions rendered by 10 Sonnet 5 subagents, adversarially verified to 100% pass (2 fix rounds); datasets/questions_v1.jsonl + pilot frozen |
 | P3 — Pilot | ✅ done (2026-07-13) | b=40 + prompts p3-v3 frozen; 0% parse-fail; ~$0.09 spent; matching table partial (model C blocked on credits, model A pending Colab) |
 | P4 — Main runs | ✅ done (2026-07-18) | all 9 conditions (A, B1, B3, C, D_k1/k3/k10, W_fixed/shuffled) × 3 seeds complete, 0 turns remaining; main-run spend ≈ $0.63; matching pilot (pilot_free_b40) complete |
-| P5 — Analysis | ✅ done (2026-07-19) | analysis pipeline (baselines, mainrun, manipulation, figures, tables) + `analyze-main` CLI; deliverables in analysis_out/; 366 tests green under `-W error`; final whole-branch review: ready to ship |
+| P5 — Analysis | ✅ done (2026-07-19) | analysis pipeline (baselines, mainrun, manipulation, figures, tables) + `analyze-main` CLI; deliverables in analysis_out/; 384+ tests green under `-W error` (392 after packaging); final whole-branch review: ready to ship |
 | P6 — Ship | ✅ done (2026-07-19) | docs/writeup.md (4,039 words, fact-checked ~70 claims, 2 review rounds) + public README.md (Fig 1 top, one-command repro on released data/main logs, $0.73 stated cost); Streamlit replay skipped (optional) |
 
 ## Budget
@@ -131,3 +131,11 @@ data/pilot_b80_pv3  PILOT_B80_PV3  10/10    0.0000      0.2681      0.2024      
 - New conditions A_PRO (6× deepseek-v4-pro, $0.45) and A_LUNA (6× gpt-5.6-luna, $2.61), full two-pass, same 40 questions × 3 seeds; data under data/v2/ (not yet released). Parse-fails: 1/6000.
 - Results: market deficit vs mean pool — flash +0.051 (p=.080) / pro −0.003 (p=.377) / luna +0.002 (p=.451). Luna market vs flash market paired: −0.076, p=.001. Pro pool gap ≈ flash pool gap (Δ+0.010, p=.29) → deficit fix is TRADING skill, not knowledge (same-family control). Luna pool better (−0.027, p=.0003) and team ρ=0.283 (below all v1 teams); pro ρ=0.378 ≈ flash's 0.398 with opposite market outcome → capability matters independently of ρ.
 - Revised headline: cheap traders make LMSR destroy information; capable traders reach parity with static pooling; NO tier beats the pool in this regime.
+
+## Packaging (2026-07-26)
+
+- LICENSE (MIT, Hrishi Kabra), CITATION.cff v1.0.0, GitHub Actions CI (`pytest -W error`, run #1 green), repo topics/About set.
+- Streamlit price-path replay: `pip install -e ".[replay]"` + `streamlit run replay/streamlit_app.py` — pure data layer pnyx/analysis/replay.py (tested, streamlit optional), app shows price paths, adversary attacks, herding panel.
+- arXiv-style PDF: `bash paper/build.sh` -> paper/pnyx.pdf (11pp, xelatex, docs/writeup.md remains single source of truth).
+- Zenodo DOI: pending user linking account; then v1.0.0 release mints DOI, badge follows.
+- Suite: 392 tests.
