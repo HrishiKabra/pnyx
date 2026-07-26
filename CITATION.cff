@@ -7,6 +7,8 @@ title: >-
 authors:
   - family-names: Kabra
     given-names: Hrishi
+    orcid: "https://orcid.org/0009-0000-7725-463X"
+    email: hkabra@tulane.edu
 repository-code: "https://github.com/HrishiKabra/pnyx"
 license: MIT
 keywords:
