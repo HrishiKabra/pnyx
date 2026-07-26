@@ -85,7 +85,7 @@ Run the test suite:
 pytest -W error
 ```
 
-384 tests pass, including exact-value LMSR/oracle checks and a kill-and-resume
+392 tests pass, including exact-value LMSR/oracle checks and a kill-and-resume
 replay test.
 
 ## Results at a glance
