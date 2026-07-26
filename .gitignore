@@ -30,3 +30,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# LaTeX build intermediates for paper/build.sh (paper/pnyx.pdf is committed)
+paper/build/

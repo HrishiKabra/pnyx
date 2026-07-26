@@ -35,7 +35,8 @@ help, do nothing, or hurt, plus stress tests under model-error correlation,
 adversarial capital, and wealth persistence.
 
 Full write-up: [`docs/writeup.md`](docs/writeup.md). Pre-registered
-hypotheses and protocol: [`SPEC.md`](SPEC.md).
+hypotheses and protocol: [`SPEC.md`](SPEC.md). arXiv-style PDF:
+[`paper/pnyx.pdf`](paper/pnyx.pdf) (build it yourself with `bash paper/build.sh`).
 
 ## Reproduce the paper
 
