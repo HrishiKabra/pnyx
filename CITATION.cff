@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: >-
+  Pnyx: when do prediction markets beat static pools? A controlled
+  stress test of LLM belief aggregation
+authors:
+  - family-names: Kabra
+    given-names: Hrishi
+repository-code: "https://github.com/HrishiKabra/pnyx"
+license: MIT
+keywords:
+  - prediction-markets
+  - LMSR
+  - LLM-agents
+  - information-aggregation
+  - belief-aggregation
+  - multi-agent
+version: 1.0.0
+date-released: "2026-07-26"

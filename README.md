@@ -1,5 +1,8 @@
 # Pnyx
 
+[![CI](https://github.com/HrishiKabra/pnyx/actions/workflows/ci.yml/badge.svg)](https://github.com/HrishiKabra/pnyx/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ### When Do Prediction Markets Beat Static Pools? A Controlled Stress Test of LLM Belief Aggregation
 
 Pnyx is a synthetic information environment with a Bayes-optimal posterior
@@ -160,3 +163,23 @@ If you build on this environment, protocol, or results, please cite:
 
 > *When Do Prediction Markets Beat Static Pools? A Controlled Stress Test of
 > LLM Belief Aggregation.* Pnyx project, 2026. Write-up: `docs/writeup.md`.
+
+```bibtex
+@software{kabra_pnyx_2026,
+  author  = {Kabra, Hrishi},
+  title   = {Pnyx: when do prediction markets beat static pools? A controlled
+             stress test of LLM belief aggregation},
+  year    = {2026},
+  version = {1.0.0},
+  url     = {https://github.com/HrishiKabra/pnyx}
+}
+```
+
+Machine-readable citation metadata: [`CITATION.cff`](CITATION.cff).
+
+### Data and figures
+
+Code is MIT-licensed (see [`LICENSE`](LICENSE)). The released event logs
+(`data/main/`, `data/v2/`), the question dataset (`datasets/`), and the
+figures under `analysis_out/` are licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
