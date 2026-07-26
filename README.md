@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/HrishiKabra/pnyx/actions/workflows/ci.yml/badge.svg)](https://github.com/HrishiKabra/pnyx/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21602213.svg)](https://doi.org/10.5281/zenodo.21602213)
 
 ### When Do Prediction Markets Beat Static Pools? A Controlled Stress Test of LLM Belief Aggregation
 
@@ -192,6 +193,7 @@ If you build on this environment, protocol, or results, please cite:
              stress test of LLM belief aggregation},
   year    = {2026},
   version = {1.0.0},
+  doi     = {10.5281/zenodo.21602214},
   url     = {https://github.com/HrishiKabra/pnyx}
 }
 ```

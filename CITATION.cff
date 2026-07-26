@@ -10,6 +10,14 @@ authors:
     orcid: "https://orcid.org/0009-0000-7725-463X"
     email: hkabra@tulane.edu
 repository-code: "https://github.com/HrishiKabra/pnyx"
+doi: 10.5281/zenodo.21602214
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21602213
+    description: "Concept DOI (all versions)"
+  - type: doi
+    value: 10.5281/zenodo.21602214
+    description: "Version DOI (v1.0.0)"
 license: MIT
 keywords:
   - prediction-markets
